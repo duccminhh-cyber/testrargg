@@ -29,4 +29,4 @@ jobs:
     - name: Test Build Docker Images
       run: |
         # Chạy giả lập build Docker Compose để đảm bảo file cấu hình không bị lỗi
-        docker-compose build
+        docker compose build
