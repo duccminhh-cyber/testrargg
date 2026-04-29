@@ -1,0 +1,47 @@
+# --- Logs ---
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Frontend (React/Node) ---
+node_modules/
+dist/
+dist-ssr/
+build/
+*.local
+
+# --- Backend (Python) ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env_python/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+
+# --- Docker Volumes (Data & Backups) - RẤT QUAN TRỌNG ---
+postgres_data/
+qdrant_data/
+minio_data/
+db_backups/
+
+# --- Environment Variables ---
+#.env
+
+# --- Editor directories and files ---
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

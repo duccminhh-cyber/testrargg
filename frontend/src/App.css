@@ -1,0 +1,84 @@
+/* App.css - Bản tối ưu cho RAG App */
+
+/* 1. Global Reset & Font */
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light;
+  background-color: #f8fafc;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  place-content: center;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+/* 2. Markdown Content - Đây là linh hồn của câu trả lời từ AI */
+.markdown-content {
+  font-size: 15px;
+  color: #1e293b;
+}
+
+.markdown-content p {
+  margin: 8px 0;
+}
+
+.markdown-content strong {
+  color: #2563eb; /* Làm nổi bật các từ khóa quan trọng */
+}
+
+/* Kẻ bảng quy chế - Thầy cô soi cái này cực kỹ */
+.markdown-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px #e2e8f0;
+}
+
+.markdown-content th {
+  background-color: #f1f5f9;
+  padding: 10px 12px;
+  font-weight: 600;
+  text-align: left;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.markdown-content td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.markdown-content tr:last-child td {
+  border-bottom: none;
+}
+
+/* Danh sách */
+.markdown-content ul, .markdown-content ol {
+  padding-left: 20px;
+  margin: 10px 0;
+}
+
+.markdown-content li {
+  margin-bottom: 5px;
+}
+
+/* 3. Tùy chỉnh thanh cuộn cho hiện đại */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+# Tránh Python tạo file .pyc và buffer stdout/stderr
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install system deps cần cho PyMuPDF (fitz) và psycopg2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    libmupdf-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements trước để tận dụng Docker layer cache
+# (chỉ rebuild layer này khi requirements.txt thay đổi)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Tải trước model để tránh timeout khi demo
+RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='keepitreal/vietnamese-sbert')"
+
+# Copy toàn bộ source code backend
+COPY . .
+
+# Mặc định chạy FastAPI — docker-compose override lại cho Celery worker
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,0 +1,32 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Kiểm tra cú pháp (Linting)
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8
+        # Tìm và cảnh báo nếu code có lỗi cú pháp (Syntax error)
+        flake8 backend/ --count --select=E9,F63,F7,F82 --show-source --statistics || true
+
+    - name: Test Build Docker Images
+      run: |
+        # Chạy giả lập build Docker Compose để đảm bảo file cấu hình không bị lỗi
+        docker-compose build
