@@ -33,7 +33,12 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
-
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      
   minio:
     image: minio/minio
     command: server /data --console-address ":9001"
@@ -71,7 +76,7 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
       minio:
         condition: service_healthy
     restart: unless-stopped
@@ -97,7 +102,7 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
       minio:
         condition: service_healthy
     restart: unless-stopped
