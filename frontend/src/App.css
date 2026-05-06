@@ -1,84 +1,106 @@
-/* App.css - Bản tối ưu cho RAG App */
-
-/* 1. Global Reset & Font */
 :root {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
   font-weight: 400;
   color-scheme: light;
-  background-color: #f8fafc;
+  background-color: #f1f5f9;
 }
 
 body {
   margin: 0;
-  display: flex;
-  place-content: center;
   min-width: 320px;
   min-height: 100vh;
 }
 
-/* 2. Markdown Content - Đây là linh hồn của câu trả lời từ AI */
+/* ── Markdown ── */
 .markdown-content {
-  font-size: 15px;
+  font-size: 14px;
   color: #1e293b;
+  line-height: 1.7;
 }
+.markdown-content p { margin: 8px 0; }
+.markdown-content p:first-child { margin-top: 0; }
+.markdown-content p:last-child { margin-bottom: 0; }
+.markdown-content strong { color: #1d4ed8; }
 
-.markdown-content p {
-  margin: 8px 0;
-}
-
-.markdown-content strong {
-  color: #2563eb; /* Làm nổi bật các từ khóa quan trọng */
-}
-
-/* Kẻ bảng quy chế - Thầy cô soi cái này cực kỹ */
 .markdown-content table {
   border-collapse: collapse;
   width: 100%;
-  margin: 16px 0;
+  margin: 14px 0;
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 0 0 1px #e2e8f0;
+  font-size: 13px;
 }
-
 .markdown-content th {
-  background-color: #f1f5f9;
-  padding: 10px 12px;
+  background: #f1f5f9;
+  padding: 9px 12px;
   font-weight: 600;
   text-align: left;
   border-bottom: 2px solid #e2e8f0;
+  color: #475569;
 }
-
 .markdown-content td {
-  padding: 10px 12px;
+  padding: 9px 12px;
   border-bottom: 1px solid #f1f5f9;
 }
+.markdown-content tr:last-child td { border-bottom: none; }
+.markdown-content tr:hover td { background: #f8fafc; }
 
-.markdown-content tr:last-child td {
-  border-bottom: none;
+.markdown-content ul,
+.markdown-content ol { padding-left: 20px; margin: 8px 0; }
+.markdown-content li { margin-bottom: 4px; }
+
+.markdown-content code {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 13px;
+  color: #7c3aed;
 }
-
-/* Danh sách */
-.markdown-content ul, .markdown-content ol {
-  padding-left: 20px;
+.markdown-content pre {
+  background: #0f172a;
+  border-radius: 8px;
+  padding: 14px;
+  overflow-x: auto;
   margin: 10px 0;
 }
-
-.markdown-content li {
-  margin-bottom: 5px;
+.markdown-content pre code {
+  background: none;
+  border: none;
+  color: #e2e8f0;
+  padding: 0;
+}
+.markdown-content blockquote {
+  border-left: 3px solid #3b82f6;
+  margin: 10px 0;
+  padding: 6px 14px;
+  background: #eff6ff;
+  border-radius: 0 6px 6px 0;
+  color: #1d4ed8;
 }
 
-/* 3. Tùy chỉnh thanh cuộn cho hiện đại */
-::-webkit-scrollbar {
-  width: 6px;
+/* ── Typing animation ── */
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 10px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ── Hover rows admin table ── */
+tbody tr:hover { background: #f8fafc; }
+
+/* ── Input focus ── */
+input:focus {
+  outline: none;
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
 }

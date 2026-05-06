@@ -1,27 +1,25 @@
-# backend/main.py
 import os
-import json # Thêm để xử lý mảng sources
+import json
 from dotenv import load_dotenv
 load_dotenv()
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, status
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
-from pydantic import BaseModel # Thêm để định nghĩa cấu trúc Request
-from prometheus_fastapi_instrumentator import Instrumentator # Giám sát hiệu năng
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel
+from prometheus_fastapi_instrumentator import Instrumentator
 
-# IMPORT THÊM ChatMessage VÀO ĐÂY
-from models import Base, User, Document, IngestStatus, ChatMessage 
+from models import Base, User, Document, IngestStatus, ChatMessage
 from database import engine, SessionLocal, get_db
-from services.minio_service import upload_file, delete_file
+from services.minio_service import upload_file, delete_file, get_file_stream  # ✅ 1 dòng import duy nhất
 from services.rag_service import query_rag, delete_document_vectors, ensure_collection
 from celery_worker import ingest_document_task
 import uuid
 
-# ── Config ──────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
@@ -37,10 +35,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Kích hoạt giám sát hiệu năng (Monitor)
 Instrumentator().instrument(app).expose(app)
 
-# ── Models (Pydantic) ────────────────────────────────
 class UserRegister(BaseModel):
     username: str
     password: str
@@ -48,7 +44,6 @@ class UserRegister(BaseModel):
 class ChatRequest(BaseModel):
     question: str
 
-# ── Auth helpers ─────────────────────────────────────
 def verify_password(plain, hashed):
     return pwd_context.verify(plain, hashed)
 
@@ -57,7 +52,7 @@ def hash_password(password):
 
 def create_token(data: dict):
     to_encode = data.copy()
-    to_encode["exp"] = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode["exp"] = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
@@ -76,7 +71,7 @@ def require_admin(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin only")
     return current_user
 
-# ── Auth Routes ──────────────────────────────────────
+# ── Auth Routes ───────────────────────────────────────────────
 @app.post("/api/auth/login")
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form.username).first()
@@ -94,37 +89,56 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "User created successfully"}
 
-# ── Chat Routes ──────────────────────────────────────
+# ── Chat Routes ───────────────────────────────────────────────
 @app.post("/api/chat/query")
-def chat_query(request: ChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def chat_query(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     question = request.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
-    
-    # 1. Lưu câu hỏi của User vào DB
+
+    recent_messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.user_id == current_user.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    recent_messages = list(reversed(recent_messages))
+    chat_history = [
+        {"role": msg.role, "content": msg.content}
+        for msg in recent_messages
+    ]
+
     user_msg = ChatMessage(user_id=current_user.id, role="user", content=question)
     db.add(user_msg)
-    
-    # 2. Gọi RAG xử lý
-    result = query_rag(question)
-    
-    # 3. Trích xuất kết quả và lưu Bot reply vào DB
+
+    result = query_rag(question, chat_history=chat_history)
+
     answer = result.get("answer", "")
     sources = result.get("sources", [])
-    
+
     bot_msg = ChatMessage(
-        user_id=current_user.id, 
-        role="bot", 
-        content=answer, 
-        sources=json.dumps(sources) if sources else "[]"
+        user_id=current_user.id,
+        role="bot",
+        content=answer,
+        sources=sources if sources else []
     )
     db.add(bot_msg)
-    db.commit() # Lưu cả 2 message cùng lúc
+    db.commit()
 
     return result
 
 @app.get("/api/chat/history")
-def get_chat_history(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_chat_history(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.user_id == current_user.id)
@@ -132,29 +146,19 @@ def get_chat_history(skip: int = 0, limit: int = 100, db: Session = Depends(get_
         .offset(skip).limit(limit)
         .all()
     )
- 
     result = []
     for msg in messages:
-        # FIX BUG 4: Luôn map "bot" → "assistant" bất kể có sources hay không
-        # Code cũ chỉ đổi role khi có sources → bot không có sources bị giữ role "bot"
-        # → Frontend check `msg.role === "assistant"` để hiện sources → không bao giờ hiện
-        # → Render cũng không nhất quán (check role "user" vs tất cả còn lại)
         role = "assistant" if msg.role == "bot" else msg.role
- 
         msg_dict = {
             "role": role,
-            "content": msg.content or "",  # Tránh None về frontend
+            "content": msg.content or "",
         }
- 
-        # Luôn gán sources cho assistant, kể cả khi rỗng → frontend parse nhất quán
         if role == "assistant":
-            msg_dict["sources"] = msg.sources if msg.sources else "[]"
- 
+            msg_dict["sources"] = msg.sources if msg.sources else []
         result.append(msg_dict)
- 
     return result
 
-# ── Document Routes ───────────────────────────────────
+# ── Document Routes ───────────────────────────────────────────
 @app.post("/api/documents/upload")
 def upload_document(
     file: UploadFile = File(...),
@@ -179,13 +183,16 @@ def upload_document(
     db.commit()
     db.refresh(doc)
 
-    # Đẩy vào Redis queue → Celery worker xử lý nền
     ingest_document_task.delay(doc.id)
-
     return {"id": doc.id, "filename": doc.filename, "status": doc.status}
 
 @app.get("/api/documents")
-def list_documents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_documents(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     docs = db.query(Document).offset(skip).limit(limit).all()
     return [
         {
@@ -199,11 +206,47 @@ def list_documents(skip: int = 0, limit: int = 100, db: Session = Depends(get_db
     ]
 
 @app.get("/api/documents/{doc_id}/status")
-def document_status(doc_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def document_status(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"id": doc.id, "status": doc.status, "error_message": doc.error_message}
+
+# ✅ by-filename PHẢI đặt TRƯỚC {doc_id}/file
+@app.get("/api/documents/by-filename/{filename}")
+def get_doc_by_filename(
+    filename: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    doc = db.query(Document).filter(Document.filename == filename).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"id": doc.id, "filename": doc.filename}
+
+@app.get("/api/documents/{doc_id}/file")
+def get_document_file(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        file_stream = get_file_stream(doc.minio_key)
+        return StreamingResponse(
+            file_stream,
+            media_type="application/pdf",
+            # ✅ Bỏ filename đi hoàn toàn — iframe không cần tên file
+            headers={"Content-Disposition": "inline"}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Không thể tải file: {str(e)}")
 
 @app.delete("/api/documents/{doc_id}")
 def delete_document(
@@ -214,17 +257,15 @@ def delete_document(
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
     if doc.status == IngestStatus.processing:
         raise HTTPException(status_code=400, detail="Tài liệu đang được xử lý, không thể xóa lúc này.")
-        
     delete_file(doc.minio_key)
     delete_document_vectors(doc_id)
     db.delete(doc)
     db.commit()
     return {"message": "Deleted"}
 
-# ── Admin Routes ──────────────────────────────────────
+# ── Admin Routes ──────────────────────────────────────────────
 @app.get("/api/admin/users")
 def list_users(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     users = db.query(User).all()
@@ -263,19 +304,13 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depen
         raise HTTPException(status_code=404, detail="User not found")
     if user.username == "admin":
         raise HTTPException(status_code=400, detail="Cannot delete default admin")
-    
     try:
-        # 1. Xóa tất cả tin nhắn chat của user này
         db.query(ChatMessage).filter(ChatMessage.user_id == user_id).delete()
-        
-        # 2. Xóa tất cả tài liệu của user này (Cả file MinIO, vector Qdrant và DB)
         user_docs = db.query(Document).filter(Document.uploaded_by == user_id).all()
         for doc in user_docs:
-            delete_file(doc.minio_key)             # Xóa file cứng trên MinIO
-            delete_document_vectors(doc.id)        # Xóa Vector trên Qdrant
-            db.delete(doc)                         # Xóa record trên Postgres
-            
-        # 3. Cuối cùng mới xóa User
+            delete_file(doc.minio_key)
+            delete_document_vectors(doc.id)
+            db.delete(doc)
         db.delete(user)
         db.commit()
         return {"message": "Deleted successfully"}
@@ -283,12 +318,12 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depen
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Lỗi hệ thống khi xóa user: {str(e)}")
 
-# ── Startup ───────────────────────────────────────────
+# ── Startup ───────────────────────────────────────────────────
 @app.on_event("startup")
 def startup_event():
+    """Khởi tạo DB, Qdrant collection và tài khoản admin mặc định."""
     Base.metadata.create_all(bind=engine)
     ensure_collection()
-    """Tạo tài khoản admin mặc định nếu chưa có."""
     db = SessionLocal()
     try:
         if not db.query(User).filter(User.username == "admin").first():

@@ -1,23 +1,29 @@
 import os
+import logging
+import time
 from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyMuPDFLoader 
+from langchain_community.document_loaders import PyMuPDFLoader
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
+from sentence_transformers import CrossEncoder  # ✅ Thêm reranker
 
-# Đổi qdrant thành localhost
+logger = logging.getLogger(__name__)
+
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "rag_documents_v2")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+CHATGPT_MODEL = os.getenv("CHATGPT_MODEL", "openai/gpt-4.1")
 
 _embeddings = None
+_reranker = None  # ✅ Singleton reranker
 
 def get_embeddings():
     global _embeddings
@@ -25,100 +31,227 @@ def get_embeddings():
         _embeddings = HuggingFaceEmbeddings(model_name="keepitreal/vietnamese-sbert")
     return _embeddings
 
+def get_reranker():
+    """✅ Load reranker một lần, tái sử dụng — chạy được trên CPU"""
+    global _reranker
+    if _reranker is None:
+        logger.info("⏳ Đang load reranker model...")
+        # Model nhỏ ~80MB, chạy tốt trên CPU
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        logger.info("✅ Reranker đã sẵn sàng")
+    return _reranker
+
 def get_qdrant_client():
     return QdrantClient(url=QDRANT_URL)
 
 def ensure_collection():
-    client = get_qdrant_client()
-    existing = [c.name for c in client.get_collections().collections]
-    if COLLECTION_NAME not in existing:
-        client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=768, distance=Distance.COSINE),
-        )
+    try:
+        client = get_qdrant_client()
+        existing = [c.name for c in client.get_collections().collections]
+        if COLLECTION_NAME not in existing:
+            client.create_collection(
+                collection_name=COLLECTION_NAME,
+                vectors_config=VectorParams(size=768, distance=Distance.COSINE),
+            )
+            logger.info(f"✅ Đã tạo collection '{COLLECTION_NAME}'")
+        else:
+            logger.info(f"ℹ️ Collection '{COLLECTION_NAME}' đã tồn tại")
+    except Exception as e:
+        logger.error(f"❌ Không thể khởi tạo Qdrant collection: {e}")
+        raise
 
 def ingest_pdf(file_path: str, doc_id: int, filename: str):
-    # ĐÃ BỎ ensure_collection() Ở ĐÂY ĐỂ TỐI ƯU
-    loader = PyMuPDFLoader(file_path)
-    pages = loader.load()
-    
-    for page in pages:
-        if "page" in page.metadata:
-            page.metadata["page"] = page.metadata["page"] + 1
+    try:
+        loader = PyMuPDFLoader(file_path)
+        pages = loader.load()
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    splits = splitter.split_documents(pages)
+        for page in pages:
+            if "page" in page.metadata:
+                page.metadata["page"] = page.metadata["page"] + 1
 
-    for split in splits:
-        split.metadata["doc_id"] = doc_id
-        split.metadata["filename"] = filename
+        # ✅ Cải tiến 1: chunk_size 800→1000, chunk_overlap 100→150
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=150
+        )
+        splits = splitter.split_documents(pages)
 
-    vectorstore = QdrantVectorStore(
-        client=get_qdrant_client(),
-        collection_name=COLLECTION_NAME,
-        embedding=get_embeddings(),
-    )
-    vectorstore.add_documents(splits)
+        for split in splits:
+            split.metadata["doc_id"] = doc_id
+            split.metadata["filename"] = filename
+
+        vectorstore = QdrantVectorStore(
+            client=get_qdrant_client(),
+            collection_name=COLLECTION_NAME,
+            embedding=get_embeddings(),
+        )
+        vectorstore.add_documents(splits)
+        logger.info(f"✅ Ingest xong '{filename}' ({len(splits)} chunks)")
+
+    except Exception as e:
+        logger.error(f"❌ Lỗi ingest PDF '{filename}': {e}")
+        raise
 
 def delete_document_vectors(doc_id: int):
-    from qdrant_client.models import Filter, FieldCondition, MatchValue
-    client = get_qdrant_client()
-    client.delete(
-        collection_name=COLLECTION_NAME,
-        points_selector=Filter(
-            must=[FieldCondition(key="metadata.doc_id", match=MatchValue(value=doc_id))]
-        ),
-    )
+    try:
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        client = get_qdrant_client()
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=Filter(
+                must=[FieldCondition(key="metadata.doc_id", match=MatchValue(value=doc_id))]
+            ),
+        )
+        logger.info(f"✅ Đã xóa vectors của doc_id={doc_id}")
+    except Exception as e:
+        logger.error(f"❌ Lỗi xóa vectors doc_id={doc_id}: {e}")
+        raise
 
-def query_rag(question: str, k: int = 3):
-    # ĐÃ BỎ ensure_collection() Ở ĐÂY ĐỂ TRÁNH LAG KHI CHAT
-    vectorstore = QdrantVectorStore(
-        client=get_qdrant_client(),
-        collection_name=COLLECTION_NAME,
-        embedding=get_embeddings(),
-    )
-    retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+def query_rag(question: str, k: int = 5, chat_history: list = []):
+    max_retries = 3
+    retry_delays = [20, 40, 60]
 
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=GOOGLE_API_KEY
-    )
+    for attempt in range(max_retries):
+        try:
+            vectorstore = QdrantVectorStore(
+                client=get_qdrant_client(),
+                collection_name=COLLECTION_NAME,
+                embedding=get_embeddings(),
+            )
 
-    prompt = ChatPromptTemplate.from_template(
-        "Bạn là trợ lý học vụ thông minh của UET.\n"
-        "Hãy trả lời câu hỏi dựa trên ngữ cảnh được cung cấp một cách chi tiết và trình bày đẹp bằng Markdown (sử dụng list, in đậm, hoặc bảng nếu cần).\n"
-        "Nếu thông tin không có trong ngữ cảnh, hãy nói 'Tôi không tìm thấy thông tin này trong tài liệu'.\n\n"
-        "Ngữ cảnh (Context):\n{context}\n\n"
-        "Câu hỏi: {question}"
-    )
+            # ✅ Cải tiến 2+3: Lấy 15 docs trước để rerank, threshold thấp hơn để không bỏ sót
+            retriever = vectorstore.as_retriever(
+                search_type="similarity_score_threshold",
+                search_kwargs={"k": 15, "score_threshold": 0.4}
+            )
 
-    retrieved_docs = retriever.invoke(question)
+            llm = ChatOpenAI(
+                model=CHATGPT_MODEL,
+                api_key=GITHUB_TOKEN,
+                base_url="https://models.github.ai/inference",
+            )
 
-    def format_docs(docs):
-        formatted = []
-        for doc in docs:
-            f = f"[Nguồn: {doc.metadata.get('filename')}, Trang: {doc.metadata.get('page')}]\nNội dung: {doc.page_content}"
-            formatted.append(f)
-        return "\n\n---\n\n".join(formatted)
+            def format_history(history):
+                if not history:
+                    return ""
+                lines = []
+                for msg in history:
+                    role = "Sinh viên" if msg["role"] == "user" else "Trợ lý"
+                    lines.append(f"{role}: {msg['content']}")
+                return "\n".join(lines)
 
-    chain = (
-        {"context": lambda _: format_docs(retrieved_docs), "question": RunnablePassthrough()}
-        | prompt
-        | llm
-    )
-    response = chain.invoke(question)
+            prompt = ChatPromptTemplate.from_template(
+                "Bạn là trợ lý học vụ thông minh của UET.\n\n"
+                "LUẬT QUAN TRỌNG:\n"
+                "1. Nếu câu hỏi là lời chào hoặc giao tiếp thông thường, hãy tự giới thiệu thân thiện.\n"
+                "2. Với câu hỏi chuyên môn, trả lời chi tiết bằng Markdown DỰA HOÀN TOÀN VÀO NGỮ CẢNH.\n"
+                "3. Nếu câu hỏi liên quan đến cuộc trò chuyện trước, dùng Lịch sử hội thoại để hiểu đúng ý.\n"
+                "4. Nếu ngữ cảnh trống, hãy nói: 'Tôi chưa có thông tin về vấn đề này trong tài liệu hiện tại'.\n\n"
+                "Lịch sử hội thoại gần đây:\n{history}\n\n"
+                "Ngữ cảnh từ tài liệu:\n{context}\n\n"
+                "Câu hỏi hiện tại: {question}"
+            )
 
-    sources = [
-        {"filename": doc.metadata.get("filename", "unknown"), "page": doc.metadata.get("page", "?")}
-        for doc in retrieved_docs
-    ]
-    
-    unique_sources = []
-    seen = set()
-    for s in sources:
-        pair = (s['filename'], s['page'])
-        if pair not in seen:
-            unique_sources.append(s)
-            seen.add(pair)
+            # Lấy docs từ Qdrant
+            retrieved_docs = retriever.invoke(question)
 
-    return {"answer": response.content, "sources": unique_sources}
+            # ✅ Cải tiến 3: Reranking — chỉ giữ top k docs liên quan nhất
+            if retrieved_docs and len(retrieved_docs) > k:
+                try:
+                    reranker = get_reranker()
+                    pairs = [[question, doc.page_content] for doc in retrieved_docs]
+                    scores = reranker.predict(pairs)
+                    # Sắp xếp theo score giảm dần, lấy top k
+                    ranked = sorted(
+                        zip(scores, retrieved_docs),
+                        key=lambda x: x[0],
+                        reverse=True
+                    )
+                    retrieved_docs = [doc for _, doc in ranked[:k]]
+                    logger.info(f"✅ Reranked: {len(pairs)} → {k} docs")
+                except Exception as re:
+                    # Nếu rerank lỗi thì vẫn dùng top k bình thường
+                    logger.warning(f"⚠️ Rerank thất bại, dùng top {k} mặc định: {re}")
+                    retrieved_docs = retrieved_docs[:k]
+            elif retrieved_docs:
+                retrieved_docs = retrieved_docs[:k]
+
+            # Không có docs liên quan → trả lời ngay không cần gọi LLM
+            if not retrieved_docs:
+                chain = (
+                    {
+                        "context": lambda _: "",
+                        "history": lambda _: format_history(chat_history),
+                        "question": RunnablePassthrough()
+                    }
+                    | prompt
+                    | llm
+                )
+                response = chain.invoke(question)
+                return {"answer": response.content, "sources": []}
+
+            def format_docs(docs):
+                if not docs:
+                    return ""
+                formatted = []
+                for doc in docs:
+                    f = f"[Nguồn: {doc.metadata.get('filename')}, Trang: {doc.metadata.get('page')}]\nNội dung: {doc.page_content}"
+                    formatted.append(f)
+                return "\n\n---\n\n".join(formatted)
+
+            chain = (
+                {
+                    "context": lambda _: format_docs(retrieved_docs),
+                    "history": lambda _: format_history(chat_history),
+                    "question": RunnablePassthrough()
+                }
+                | prompt
+                | llm
+            )
+            response = chain.invoke(question)
+
+            sources = [
+                {"filename": doc.metadata.get("filename", "unknown"), "page": doc.metadata.get("page", "?")}
+                for doc in retrieved_docs
+            ]
+            unique_sources = []
+            seen = set()
+            for s in sources:
+                pair = (s['filename'], s['page'])
+                if pair not in seen:
+                    unique_sources.append(s)
+                    seen.add(pair)
+
+            return {"answer": response.content, "sources": unique_sources}
+
+        except Exception as e:
+            err_str = str(e)
+
+            if "429" in err_str or "rate limit" in err_str.lower() or "quota" in err_str.lower():
+                wait = retry_delays[attempt] if attempt < len(retry_delays) else 60
+                logger.warning(f"⏳ Rate limit (lần {attempt+1}/{max_retries}), chờ {wait}s...")
+                if attempt < max_retries - 1:
+                    time.sleep(wait)
+                    continue
+                return {
+                    "answer": "⚠️ Hệ thống đang bận, vui lòng thử lại sau khoảng 1 phút.",
+                    "sources": []
+                }
+
+            elif "503" in err_str or "unavailable" in err_str.lower():
+                wait = retry_delays[attempt] if attempt < len(retry_delays) else 60
+                logger.warning(f"⏳ Server 503 (lần {attempt+1}/{max_retries}), chờ {wait}s...")
+                if attempt < max_retries - 1:
+                    time.sleep(wait)
+                    continue
+                return {
+                    "answer": "⚠️ Dịch vụ AI tạm thời không khả dụng, vui lòng thử lại sau.",
+                    "sources": []
+                }
+
+            else:
+                logger.error(f"❌ Lỗi query RAG: {e}")
+                return {
+                    "answer": "⚠️ Hệ thống gặp sự cố, vui lòng thử lại sau.",
+                    "sources": []
+                }

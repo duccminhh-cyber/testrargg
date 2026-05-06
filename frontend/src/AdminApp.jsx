@@ -2,6 +2,14 @@ import { useState, useEffect } from "react";
 
 const API = "/api";
 
+// ✅ Config badge 4 trạng thái
+const STATUS_STYLE = {
+  done:       { bg: "#dcfce7", color: "#166534", label: "✓ Hoàn thành" },
+  processing: { bg: "#dbeafe", color: "#1e40af", label: "⟳ Đang xử lý" },
+  pending:    { bg: "#fef9c3", color: "#854d0e", label: "⏳ Chờ xử lý"  },
+  error:      { bg: "#fee2e2", color: "#991b1b", label: "✗ Lỗi"         },
+};
+
 export default function AdminApp() {
   const [token, setToken] = useState(localStorage.getItem("adminToken") || "");
   const [tab, setTab] = useState("documents");
@@ -10,26 +18,9 @@ export default function AdminApp() {
   const [uploading, setUploading] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [refreshing, setRefreshing] = useState(false); // ✅ Trạng thái refresh
 
   const headers = { Authorization: `Bearer ${token}` };
-
-  const createUser = async () => {                        // ← sau headers
-    if (!newUsername || !newPassword) return alert("Điền đủ username và password!");
-    const res = await fetch(`${API}/admin/users`, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ username: newUsername, password: newPassword, is_admin: false }),
-    });
-    if (res.ok) {
-      alert("Tạo user thành công!");
-      setNewUsername("");
-      setNewPassword("");
-      fetchUsers();
-    } else {
-      const err = await res.json();
-      alert(err.detail || "Lỗi tạo user!");
-    }
-  };
 
   useEffect(() => {
     if (token) {
@@ -42,18 +33,24 @@ export default function AdminApp() {
     e.preventDefault();
     const form = new URLSearchParams({
       username: e.target.username.value,
-      password: e.target.password.value
+      password: e.target.password.value,
     });
     const res = await fetch(`${API}/auth/login`, { method: "POST", body: form });
     const data = await res.json();
     if (res.ok) {
+      if (!data.is_admin) {
+        alert("Tài khoản này không có quyền Admin!");
+        return;
+      }
       localStorage.setItem("adminToken", data.access_token);
       setToken(data.access_token);
-    } else alert("Sai tài khoản Admin!");
+    } else {
+      alert("Sai tài khoản hoặc mật khẩu!");
+    }
   }
 
   const fetchDocuments = async () => {
-    const res = await fetch(`${API}/documents`, { headers }); // Bỏ chữ /admin/ đi
+    const res = await fetch(`${API}/documents`, { headers });
     if (res.ok) setDocuments(await res.json());
   };
 
@@ -62,24 +59,44 @@ export default function AdminApp() {
     if (res.ok) setUsers(await res.json());
   };
 
+  // ✅ Refresh với loading indicator
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchDocuments();
+    setRefreshing(false);
+  };
+
   const handleUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
-    const res = await fetch(`${API}/documents/upload`, { method: "POST", headers, body: formData });
+    const res = await fetch(`${API}/documents/upload`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
     if (res.ok) {
-      alert("Upload thành công, chờ Worker xử lý!");
+      alert("Upload thành công! Worker đang xử lý trong nền.");
       fetchDocuments();
+    } else {
+      const err = await res.json();
+      alert(err.detail || "Upload thất bại!");
     }
     setUploading(false);
+    e.target.value = "";
   };
 
   const deleteDoc = async (id) => {
     if (window.confirm("Xóa file này và toàn bộ Vector Data?")) {
-      await fetch(`${API}/documents/${id}`, { method: "DELETE", headers });
-      fetchDocuments();
+      const res = await fetch(`${API}/documents/${id}`, { method: "DELETE", headers });
+      if (res.ok) {
+        fetchDocuments();
+      } else {
+        const err = await res.json();
+        alert(err.detail || "Không thể xóa tài liệu này!");
+      }
     }
   };
 
@@ -87,100 +104,257 @@ export default function AdminApp() {
     if (window.confirm("Xóa người dùng này cùng toàn bộ dữ liệu của họ?")) {
       const res = await fetch(`${API}/admin/users/${id}`, { method: "DELETE", headers });
       if (res.ok) {
-        alert("Đã xóa thành công!");
-        fetchUsers(); // Load lại danh sách
+        fetchUsers();
       } else {
         alert("Lỗi khi xóa người dùng!");
       }
     }
   };
 
+  const createUser = async () => {
+    if (!newUsername || !newPassword) return alert("Điền đủ username và password!");
+    const res = await fetch(`${API}/admin/users`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ username: newUsername, password: newPassword, is_admin: false }),
+    });
+    if (res.ok) {
+      setNewUsername("");
+      setNewPassword("");
+      fetchUsers();
+    } else {
+      const err = await res.json();
+      alert(err.detail || "Lỗi tạo user!");
+    }
+  };
+
+  // ── Login ─────────────────────────────────────────────────
   if (!token) {
     return (
       <div style={styles.authContainer}>
         <form onSubmit={adminLogin} style={styles.authCard}>
-          <h2 style={{ marginBottom: 20 }}>Quản trị hệ thống</h2>
-          <input name="username" style={styles.input} placeholder="Admin Username" />
-          <input name="password" type="password" style={styles.input} placeholder="Password" />
-          <button style={styles.primaryBtn}>Đăng nhập Quản lý</button>
+          <div style={styles.authLogoWrap}>
+            <div style={styles.authLogo}>⚙️</div>
+          </div>
+          <h2 style={styles.authTitle}>Quản trị hệ thống</h2>
+          <p style={styles.authSubtitle}>Đăng nhập bằng tài khoản Admin</p>
+          <input name="username" style={styles.input} placeholder="Tên đăng nhập" />
+          <input name="password" type="password" style={styles.input} placeholder="Mật khẩu" />
+          <button style={styles.primaryBtn} type="submit">Đăng nhập</button>
         </form>
       </div>
     );
   }
 
+  // ── Admin Layout ──────────────────────────────────────────
   return (
     <div style={styles.adminLayout}>
+      {/* Sidebar */}
       <aside style={styles.sidebar}>
-        <div style={styles.sidebarBrand}>RAG ADMIN</div>
-        <div style={tab === 'documents' ? styles.sideItemActive : styles.sideItem} onClick={() => setTab('documents')}>📂 Tài liệu</div>
-        <div style={tab === 'users' ? styles.sideItemActive : styles.sideItem} onClick={() => setTab('users')}>👥 Người dùng</div>
-        <button style={styles.logoutBtn} onClick={() => { localStorage.removeItem("adminToken"); setToken(""); }}>Thoát</button>
+        <div style={styles.sidebarBrand}>
+          <span style={{ fontSize: 20 }}>⚙️</span>
+          <span>RAG ADMIN</span>
+        </div>
+
+        <nav style={{ flex: 1 }}>
+          <div
+            style={tab === "documents" ? styles.sideItemActive : styles.sideItem}
+            onClick={() => setTab("documents")}
+          >
+            <span>📂</span> Tài liệu
+          </div>
+          <div
+            style={tab === "users" ? styles.sideItemActive : styles.sideItem}
+            onClick={() => setTab("users")}
+          >
+            <span>👥</span> Người dùng
+          </div>
+        </nav>
+
+        {/* ✅ Stats nhỏ ở sidebar */}
+        <div style={styles.sideStats}>
+          <div style={styles.statItem}>
+            <span style={styles.statNum}>{documents.length}</span>
+            <span style={styles.statLabel}>Tài liệu</span>
+          </div>
+          <div style={styles.statDivider} />
+          <div style={styles.statItem}>
+            <span style={styles.statNum}>{users.length}</span>
+            <span style={styles.statLabel}>Người dùng</span>
+          </div>
+        </div>
+
+        <button
+          style={styles.logoutBtn}
+          onClick={() => {
+            localStorage.removeItem("adminToken");
+            setToken("");
+          }}
+        >
+          Đăng xuất
+        </button>
       </aside>
 
+      {/* Main */}
       <main style={styles.mainContent}>
+        {/* Content Header */}
         <header style={styles.contentHeader}>
-          <h1>{tab === 'documents' ? "Quản lý Tài liệu RAG" : "Quản lý Người dùng"}</h1>
-          {tab === 'documents' && (
-            <label style={styles.uploadBtn}>
-              {uploading ? "Đang xử lý..." : "+ Thêm PDF mới"}
-              <input type="file" hidden onChange={handleUpload} accept=".pdf" disabled={uploading} />
-            </label>
+          <div>
+            <h1 style={styles.contentTitle}>
+              {tab === "documents" ? "Quản lý Tài liệu RAG" : "Quản lý Người dùng"}
+            </h1>
+            <p style={styles.contentSubtitle}>
+              {tab === "documents"
+                ? `${documents.length} tài liệu · ${documents.filter(d => d.status === "done").length} đã xử lý`
+                : `${users.length} người dùng · ${users.filter(u => u.is_admin).length} admin`}
+            </p>
+          </div>
+
+          {tab === "documents" && (
+            <div style={{ display: "flex", gap: 8 }}>
+              {/* ✅ Nút refresh */}
+              <button
+                onClick={handleRefresh}
+                style={styles.refreshBtn}
+                disabled={refreshing}
+              >
+                {refreshing ? "⟳ Đang tải..." : "↻ Làm mới"}
+              </button>
+              <label style={uploading ? { ...styles.uploadBtn, opacity: 0.6 } : styles.uploadBtn}>
+                {uploading ? "⟳ Đang xử lý..." : "+ Thêm PDF"}
+                <input type="file" hidden onChange={handleUpload} accept=".pdf" disabled={uploading} />
+              </label>
+            </div>
           )}
         </header>
 
-        {tab === 'users' && (
-          <div style={{ display: "flex", gap: "10px", marginBottom: "20px", background: "#fff", padding: "15px", borderRadius: "12px", boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1)" }}>
-            <input
-              style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", outline: "none" }}
-              placeholder="Tên đăng nhập mới..."
-              value={newUsername}
-              onChange={e => setNewUsername(e.target.value)}
-            />
-            <input
-              style={{ flex: 1, padding: "10px", borderRadius: "8px", border: "1px solid #cbd5e1", outline: "none" }}
-              type="password"
-              placeholder="Mật khẩu..."
-              value={newPassword}
-              onChange={e => setNewPassword(e.target.value)}
-            />
-            <button style={styles.uploadBtn} onClick={createUser}>
-              + Cấp tài khoản
-            </button>
+        {/* Create User Form */}
+        {tab === "users" && (
+          <div style={styles.createUserCard}>
+            <p style={styles.createUserLabel}>Cấp tài khoản mới</p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <input
+                style={styles.formInput}
+                placeholder="Tên đăng nhập..."
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+              />
+              <input
+                style={styles.formInput}
+                type="password"
+                placeholder="Mật khẩu..."
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+              />
+              <button style={styles.uploadBtn} onClick={createUser}>
+                + Tạo tài khoản
+              </button>
+            </div>
           </div>
         )}
 
+        {/* Table */}
         <div style={styles.tableCard}>
           <table style={styles.table}>
             <thead>
-              <tr style={{ background: '#f8fafc' }}>
-                <th style={styles.th}>ID</th>
-                <th style={styles.th}>{tab === 'documents' ? "Tên File" : "Tên đăng nhập"}</th>
+              <tr style={{ background: "#f8fafc" }}>
+                <th style={{ ...styles.th, width: 60 }}>ID</th>
+                <th style={styles.th}>{tab === "documents" ? "Tên File" : "Tên đăng nhập"}</th>
                 <th style={styles.th}>Trạng thái / Vai trò</th>
-                <th style={styles.th}>Hành động</th>
+                {tab === "documents" && <th style={styles.th}>Ngày tải lên</th>}
+                <th style={{ ...styles.th, width: 100, textAlign: "center" }}>Hành động</th>
               </tr>
             </thead>
             <tbody>
-              {tab === 'documents' ? documents.map(doc => (
-                <tr key={doc.id} style={styles.tr}>
-                  <td style={styles.td}>{doc.id}</td>
-                  <td style={styles.td}><b>{doc.filename}</b></td>
-                  <td style={styles.td}>
-                    <span style={{ ...styles.badge, background: doc.status === 'done' ? '#dcfce7' : '#fef9c3' }}>{doc.status}</span>
-                  </td>
-                  <td style={styles.td}><button onClick={() => deleteDoc(doc.id)} style={styles.delBtn}>Xóa</button></td>
-                </tr>
-              )) : users.map(user => (
-                <tr key={user.id} style={styles.tr}>
-                  <td style={styles.td}>{user.id}</td>
-                  <td style={styles.td}>{user.username}</td>
-                  <td style={styles.td}>{user.is_admin ? "Admin" : "User"}</td>
-                  <td style={styles.td}>
-                    {user.username !== 'admin' && (
-                      <button style={styles.delBtn} onClick={() => deleteUser(user.id)}>Xóa</button>
-                    )}
+              {/* ✅ Empty state */}
+              {tab === "documents" && documents.length === 0 && (
+                <tr>
+                  <td colSpan={5} style={styles.emptyState}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>📂</div>
+                    <div>Chưa có tài liệu nào.</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+                      Nhấn "+ Thêm PDF" để upload tài liệu đầu tiên.
+                    </div>
                   </td>
                 </tr>
-              ))}
+              )}
+              {tab === "users" && users.length === 0 && (
+                <tr>
+                  <td colSpan={4} style={styles.emptyState}>
+                    <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
+                    <div>Chưa có người dùng nào.</div>
+                  </td>
+                </tr>
+              )}
+
+              {tab === "documents"
+                ? documents.map((doc) => {
+                    const s = STATUS_STYLE[doc.status] || STATUS_STYLE.pending;
+                    return (
+                      <tr key={doc.id} style={styles.tr}>
+                        <td style={{ ...styles.td, color: "#94a3b8", fontSize: 12 }}>#{doc.id}</td>
+                        <td style={styles.td}>
+                          <div style={{ fontWeight: 600, color: "#1e293b", fontSize: 14 }}>
+                            {doc.filename}
+                          </div>
+                          {doc.error_message && (
+                            <div style={{ fontSize: 11, color: "#ef4444", marginTop: 2 }}>
+                              ⚠ {doc.error_message}
+                            </div>
+                          )}
+                        </td>
+                        <td style={styles.td}>
+                          <span style={{ ...styles.badge, background: s.bg, color: s.color }}>
+                            {s.label}
+                          </span>
+                        </td>
+                        <td style={{ ...styles.td, fontSize: 12, color: "#64748b" }}>
+                          {doc.created_at
+                            ? new Date(doc.created_at).toLocaleDateString("vi-VN")
+                            : "—"}
+                        </td>
+                        <td style={{ ...styles.td, textAlign: "center" }}>
+                          <button
+                            onClick={() => deleteDoc(doc.id)}
+                            style={styles.delBtn}
+                            disabled={doc.status === "processing"}
+                            title={doc.status === "processing" ? "Đang xử lý, không thể xóa" : "Xóa"}
+                          >
+                            🗑 Xóa
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                : users.map((user) => (
+                    <tr key={user.id} style={styles.tr}>
+                      <td style={{ ...styles.td, color: "#94a3b8", fontSize: 12 }}>#{user.id}</td>
+                      <td style={styles.td}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={styles.userAvatar}>
+                            {user.username[0].toUpperCase()}
+                          </div>
+                          <span style={{ fontWeight: 600, fontSize: 14 }}>{user.username}</span>
+                        </div>
+                      </td>
+                      <td style={styles.td}>
+                        <span style={{
+                          ...styles.badge,
+                          background: user.is_admin ? "#f3e8ff" : "#f1f5f9",
+                          color: user.is_admin ? "#7c3aed" : "#475569",
+                        }}>
+                          {user.is_admin ? "👑 Admin" : "👤 User"}
+                        </span>
+                      </td>
+                      <td style={{ ...styles.td, textAlign: "center" }}>
+                        {user.username !== "admin" && (
+                          <button style={styles.delBtn} onClick={() => deleteUser(user.id)}>
+                            🗑 Xóa
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
             </tbody>
           </table>
         </div>
@@ -190,24 +364,232 @@ export default function AdminApp() {
 }
 
 const styles = {
-  adminLayout: { display: 'flex', height: '100vh', background: '#f1f5f9' },
-  sidebar: { width: '260px', background: '#1e293b', color: '#fff', padding: '20px', display: 'flex', flexDirection: 'column' },
-  sidebarBrand: { fontSize: '22px', fontWeight: 'bold', marginBottom: '40px', textAlign: 'center', color: '#38bdf8' },
-  sideItem: { padding: '12px 15px', borderRadius: '8px', cursor: 'pointer', marginBottom: '5px', color: '#94a3b8' },
-  sideItemActive: { padding: '12px 15px', borderRadius: '8px', cursor: 'pointer', marginBottom: '5px', background: '#334155', color: '#fff', fontWeight: 'bold' },
-  mainContent: { flex: 1, padding: '40px', overflowY: 'auto' },
-  contentHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' },
-  tableCard: { background: '#fff', borderRadius: '12px', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', overflow: 'hidden' },
-  table: { width: '100%', borderCollapse: 'collapse' },
-  th: { textAlign: 'left', padding: '15px', borderBottom: '1px solid #e2e8f0', color: '#475569', fontSize: '14px' },
-  td: { padding: '15px', borderBottom: '1px solid #f1f5f9', fontSize: '14px' },
-  badge: { padding: '4px 10px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold' },
-  uploadBtn: { background: '#2563eb', color: '#fff', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' },
-  delBtn: { color: '#ef4444', border: 'none', background: 'none', cursor: 'pointer', fontWeight: 'bold' },
-  logoutBtn: { marginTop: 'auto', background: '#ef4444', color: '#fff', border: 'none', padding: '10px', borderRadius: '8px', cursor: 'pointer' },
-  // Login tương tự App.jsx
-  authContainer: { height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a' },
-  authCard: { background: '#fff', padding: '40px', borderRadius: '16px', width: '320px' },
-  input: { width: '100%', padding: '12px', marginBottom: '15px', borderRadius: '8px', border: '1px solid #ddd', boxSizing: 'border-box' },
-  primaryBtn: { width: '100%', padding: '12px', borderRadius: '8px', border: 'none', background: '#2563eb', color: '#fff', fontWeight: 'bold', cursor: 'pointer' }
+  adminLayout: { display: "flex", height: "100vh", background: "#f1f5f9" },
+
+  // ── Sidebar ──
+  sidebar: {
+    width: 240,
+    background: "#0f172a",
+    color: "#fff",
+    padding: "24px 16px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  sidebarBrand: {
+    fontSize: 18,
+    fontWeight: 700,
+    marginBottom: 32,
+    color: "#38bdf8",
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    paddingLeft: 4,
+  },
+  sideItem: {
+    padding: "10px 12px",
+    borderRadius: 8,
+    cursor: "pointer",
+    color: "#94a3b8",
+    fontSize: 14,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  sideItemActive: {
+    padding: "10px 12px",
+    borderRadius: 8,
+    cursor: "pointer",
+    background: "#1e293b",
+    color: "#fff",
+    fontWeight: 600,
+    fontSize: 14,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+  },
+  sideStats: {
+    marginTop: "auto",
+    marginBottom: 16,
+    background: "#1e293b",
+    borderRadius: 10,
+    padding: "14px",
+    display: "flex",
+    justifyContent: "space-around",
+    alignItems: "center",
+  },
+  statItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2 },
+  statNum: { fontSize: 22, fontWeight: 700, color: "#38bdf8" },
+  statLabel: { fontSize: 11, color: "#64748b" },
+  statDivider: { width: 1, height: 30, background: "#334155" },
+  logoutBtn: {
+    background: "#ef4444",
+    color: "#fff",
+    border: "none",
+    padding: "10px",
+    borderRadius: 8,
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+  },
+
+  // ── Main ──
+  mainContent: { flex: 1, padding: 32, overflowY: "auto" },
+  contentHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 24,
+  },
+  contentTitle: { fontSize: 22, fontWeight: 700, color: "#0f172a", margin: "0 0 4px" },
+  contentSubtitle: { fontSize: 13, color: "#64748b", margin: 0 },
+
+  // ── Create user ──
+  createUserCard: {
+    background: "#fff",
+    borderRadius: 12,
+    padding: "16px 20px",
+    marginBottom: 20,
+    border: "0.5px solid #e2e8f0",
+  },
+  createUserLabel: { fontSize: 13, fontWeight: 600, color: "#475569", margin: "0 0 10px" },
+  formInput: {
+    flex: 1,
+    padding: "10px 14px",
+    borderRadius: 8,
+    border: "1px solid #e2e8f0",
+    outline: "none",
+    fontSize: 14,
+    color: "#1e293b",
+  },
+
+  // ── Table ──
+  tableCard: {
+    background: "#fff",
+    borderRadius: 12,
+    border: "0.5px solid #e2e8f0",
+    overflow: "hidden",
+  },
+  table: { width: "100%", borderCollapse: "collapse" },
+  th: {
+    textAlign: "left",
+    padding: "13px 16px",
+    borderBottom: "0.5px solid #e2e8f0",
+    color: "#475569",
+    fontSize: 12,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  },
+  td: { padding: "14px 16px", borderBottom: "0.5px solid #f1f5f9", fontSize: 14 },
+  tr: { transition: "background 0.1s" },
+  badge: {
+    padding: "4px 10px",
+    borderRadius: 20,
+    fontSize: 12,
+    fontWeight: 600,
+    display: "inline-block",
+  },
+  delBtn: {
+    color: "#ef4444",
+    border: "none",
+    background: "none",
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+    padding: "4px 8px",
+    borderRadius: 6,
+  },
+  refreshBtn: {
+    padding: "9px 16px",
+    borderRadius: 8,
+    border: "1px solid #e2e8f0",
+    background: "#fff",
+    color: "#475569",
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+  },
+  uploadBtn: {
+    background: "#1e3a8a",
+    color: "#fff",
+    padding: "9px 18px",
+    borderRadius: 8,
+    cursor: "pointer",
+    fontWeight: 600,
+    fontSize: 13,
+    border: "none",
+  },
+  userAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    background: "#dbeafe",
+    color: "#1d4ed8",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  emptyState: {
+    textAlign: "center",
+    padding: "50px 20px",
+    color: "#64748b",
+    fontSize: 14,
+  },
+
+  // ── Auth ──
+  authContainer: {
+    height: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "linear-gradient(135deg, #0f172a, #1e3a8a)",
+  },
+  authCard: {
+    background: "#fff",
+    padding: 40,
+    borderRadius: 20,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+    width: 340,
+    display: "flex",
+    flexDirection: "column",
+    gap: 0,
+  },
+  authLogoWrap: { display: "flex", justifyContent: "center", marginBottom: 16 },
+  authLogo: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    background: "#0f172a",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 26,
+  },
+  authTitle: { textAlign: "center", fontSize: 20, fontWeight: 700, color: "#0f172a", margin: "0 0 6px" },
+  authSubtitle: { textAlign: "center", fontSize: 13, color: "#64748b", margin: "0 0 24px" },
+  input: {
+    width: "100%",
+    padding: 12,
+    marginBottom: 12,
+    borderRadius: 8,
+    border: "1px solid #e2e8f0",
+    boxSizing: "border-box",
+    fontSize: 14,
+    outline: "none",
+  },
+  primaryBtn: {
+    width: "100%",
+    padding: 12,
+    borderRadius: 8,
+    border: "none",
+    background: "#1e3a8a",
+    color: "#fff",
+    fontWeight: 700,
+    cursor: "pointer",
+    fontSize: 15,
+  },
 };

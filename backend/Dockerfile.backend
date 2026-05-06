@@ -17,8 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements trước để tận dụng Docker layer cache
 # (chỉ rebuild layer này khi requirements.txt thay đổi)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+RUN pip install --default-timeout=1000 --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 # Tải trước model để tránh timeout khi demo
 RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='keepitreal/vietnamese-sbert')"
 

@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, DateTime, Enum, Boolean, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
-from datetime import datetime
+from sqlalchemy import Column, Integer, String, DateTime, Enum, Boolean, ForeignKey, Text
+from sqlalchemy.orm import declarative_base  # ✅ Sửa import deprecated
+from sqlalchemy.dialects.postgresql import JSONB
+from datetime import datetime, timezone  # ✅ Thêm timezone
 import enum
 
 Base = declarative_base()
@@ -17,26 +18,24 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     is_admin = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # ✅ Sửa utcnow
 
 class Document(Base):
     __tablename__ = "documents"
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String)
-    minio_key = Column(String)          # đường dẫn trong MinIO
+    minio_key = Column(String)
     status = Column(Enum(IngestStatus), default=IngestStatus.pending)
     uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # ✅ Sửa utcnow
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))  # ✅ Sửa utcnow
     error_message = Column(String, nullable=True)
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
     id = Column(Integer, primary_key=True, index=True)
-    
-    # DÒNG MỚI THÊM VÀO: Khóa ngoại nối với bảng users
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True) 
-    
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
     role = Column(String)
-    content = Column(String)
-    sources = Column(String, nullable=True) # Nhớ có nullable=True
-    created_at = Column(DateTime, default=datetime.utcnow)
+    content = Column(Text)  # ✅ Dùng Text thay String cho nội dung dài
+    sources = Column(JSONB, nullable=True)  # ✅ Dùng JSONB thay String thô
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))  # ✅ Sửa utcnow

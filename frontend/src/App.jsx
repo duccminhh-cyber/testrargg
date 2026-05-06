@@ -4,11 +4,6 @@ import remarkGfm from "remark-gfm";
 
 const API = "/api";
 
-// ═══════════════════════════════════════════════════════════
-// FIX BUG 1: Error Boundary bắt lỗi từ ReactMarkdown
-// Functional component KHÔNG thể là Error Boundary → phải dùng class
-// Không có cái này: ReactMarkdown crash → toàn bộ cây React sập → trắng màn hình
-// ═══════════════════════════════════════════════════════════
 class MarkdownErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -22,31 +17,125 @@ class MarkdownErrorBoundary extends React.Component {
   }
   render() {
     if (this.state.hasError) {
-      // Fallback: hiển thị plain text thay vì trắng màn hình
       return <span style={{ whiteSpace: "pre-wrap" }}>{this.props.fallback}</span>;
     }
     return this.props.children;
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// FIX BUG 2: Bọc ReactMarkdown bằng Error Boundary + bật lại remarkGfm
-// remarkGfm cần thiết vì Gemini trả về GFM: bảng, **bold**, strikethrough...
-// Tháo remarkGfm ra sẽ render sai, và một số syntax có thể gây crash
-// ═══════════════════════════════════════════════════════════
 function SafeMarkdown({ content }) {
   return (
     <MarkdownErrorBoundary fallback={content}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        className="markdown-content"
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} className="markdown-content">
         {content}
       </ReactMarkdown>
     </MarkdownErrorBoundary>
   );
 }
 
+// ✅ Format giờ hiển thị
+const formatTime = () =>
+  new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+
+// ✅ Format ngày hiển thị
+const formatDate = () =>
+  new Date().toLocaleDateString("vi-VN", { weekday: "long", day: "numeric", month: "long" });
+function PDFModal({ modal, onClose, token }) {
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [loadingPdf, setLoadingPdf] = useState(true);
+
+  useEffect(() => {
+    if (!modal) return;
+    setLoadingPdf(true);
+    setBlobUrl(null);
+
+    fetch(modal.url, {
+      headers: { Authorization: `Bearer ${token}` }  // ✅ Gửi token
+    })
+      .then(res => res.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        setBlobUrl(`${url}#page=${modal.page}`);  // ✅ Scroll đến đúng trang
+        setLoadingPdf(false);
+      })
+      .catch(() => setLoadingPdf(false));
+
+    // Cleanup blob URL khi đóng modal
+    return () => {
+      if (blobUrl) URL.revokeObjectURL(blobUrl.split("#")[0]);
+    };
+  }, [modal]);
+
+  if (!modal) return null;
+
+  return (
+    <div style={modalStyles.overlay} onClick={onClose}>
+      <div style={modalStyles.container} onClick={(e) => e.stopPropagation()}>
+        <div style={modalStyles.header}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 16 }}>📄</span>
+            <div>
+              <div style={modalStyles.title}>{modal.filename}</div>
+              <div style={modalStyles.subtitle}>Trang {modal.page}</div>
+            </div>
+          </div>
+          <button style={modalStyles.closeBtn} onClick={onClose}>✕</button>
+        </div>
+
+        {/* ✅ Loading state */}
+        {loadingPdf ? (
+          <div style={modalStyles.loading}>
+            <div>⏳ Đang tải tài liệu...</div>
+          </div>
+        ) : (
+          <iframe
+            src={blobUrl}
+            style={modalStyles.iframe}
+            title={modal.filename}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+const modalStyles = {
+  overlay: {
+    position: "fixed", inset: 0,
+    background: "rgba(0,0,0,0.65)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+    zIndex: 1000,
+    backdropFilter: "blur(4px)",
+  },
+  container: {
+    background: "#fff",
+    borderRadius: 14,
+    width: "82vw", height: "88vh",
+    display: "flex", flexDirection: "column",
+    overflow: "hidden",
+    boxShadow: "0 30px 80px rgba(0,0,0,0.35)",
+  },
+  header: {
+    padding: "12px 16px",
+    background: "#1e3a8a",
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    flexShrink: 0,
+  },
+  title: { color: "#fff", fontWeight: 700, fontSize: 14 },
+  subtitle: { color: "#93c5fd", fontSize: 11 },
+  closeBtn: {
+    width: 30, height: 30,
+    borderRadius: 7,
+    border: "none",
+    background: "rgba(255,255,255,0.15)",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 14,
+    display: "flex", alignItems: "center", justifyContent: "center",
+  },
+  iframe: { flex: 1, border: "none", width: "100%", height: "100%" },
+};
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token") || "");
   const [isRegistering, setIsRegistering] = useState(false);
@@ -56,6 +145,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
+  const [pdfModal, setPdfModal] = useState(null);
 
   useEffect(() => {
     if (token) fetchHistory();
@@ -66,17 +156,26 @@ export default function App() {
   }, [messages]);
 
   async function fetchHistory() {
-    try {
-      const res = await fetch(`${API}/chat/history`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(data);
+    const maxRetries = 5;
+    const retryDelay = 2000; // 2 giây
+
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const res = await fetch(`${API}/chat/history`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setMessages(data);
+          return; // ✅ Thành công thì dừng
+        }
+      } catch (err) {
+        console.log(`Retry ${i + 1}/${maxRetries} fetch history...`);
       }
-    } catch (err) {
-      console.error("Lỗi load lịch sử", err);
+      // Chờ 2s rồi thử lại
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
     }
+    console.error("Không thể load lịch sử sau nhiều lần thử");
   }
 
   async function handleAuth(e) {
@@ -95,17 +194,17 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         if (isRegistering) {
-          alert("Đăng ký xong rồi, đăng nhập đi m!");
+          alert("Đăng ký thành công! Hãy đăng nhập.");
           setIsRegistering(false);
         } else {
           localStorage.setItem("token", data.access_token);
           setToken(data.access_token);
         }
       } else {
-        alert(data.detail || "Có biến rồi!");
+        alert(data.detail || "Đăng nhập thất bại!");
       }
     } catch (err) {
-      alert("Server sập hoặc lỗi mạng!");
+      alert("Không thể kết nối server. Kiểm tra lại mạng!");
     }
   }
 
@@ -113,16 +212,10 @@ export default function App() {
     e.preventDefault();
     if (!input.trim() || loading) return;
 
-    // ═══════════════════════════════════════════════════════
-    // FIX BUG 3: Lưu question vào biến riêng TRƯỚC khi clear input
-    // setInput("") là async → nếu dùng thẳng `input` trong body fetch
-    // sau khi setInput(""), giá trị vẫn đúng (closure), NHƯNG nếu React
-    // batch update và re-render trước khi fetch → input có thể bị "" rồi
-    // Lưu vào const là cách an toàn nhất, không có risk gì
-    // ═══════════════════════════════════════════════════════
     const question = input.trim();
+    const time = formatTime();
 
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    setMessages((prev) => [...prev, { role: "user", content: question, time }]);
     setInput("");
     setLoading(true);
 
@@ -133,7 +226,7 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ question }), // Dùng biến đã lưu, 100% an toàn
+        body: JSON.stringify({ question }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -143,87 +236,166 @@ export default function App() {
             role: "assistant",
             content: data.answer ?? "",
             sources: JSON.stringify(data.sources ?? []),
+            time: formatTime(),
           },
         ]);
       } else {
-        // Hiển thị lỗi từ server thay vì im lặng
         setMessages((prev) => [
           ...prev,
           {
             role: "assistant",
             content: `⚠️ Lỗi từ server: ${data.detail || "Không xác định"}`,
             sources: "[]",
+            time: formatTime(),
           },
         ]);
       }
     } catch (err) {
-      console.error(err);
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
           content: "⚠️ Không thể kết nối server. Kiểm tra lại mạng hoặc backend.",
           sources: "[]",
+          time: formatTime(),
         },
       ]);
     } finally {
-      // Dùng finally để loading luôn được tắt, kể cả khi throw
       setLoading(false);
     }
   }
+  async function handleSourceClick(src) {
+  try {
+    const res = await fetch(
+      `/api/documents/by-filename/${encodeURIComponent(src.filename)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.ok) return alert("Không tìm thấy tài liệu!");
+    const doc = await res.json();
+    setPdfModal({
+      url: `/api/documents/${doc.id}/file`,
+      page: src.page || 1,
+      filename: src.filename,
+    });
+  } catch {
+    alert("Không thể mở tài liệu!");
+  }
+}
 
+  // ── Login / Register ──────────────────────────────────────
   if (!token) {
     return (
       <div style={styles.authContainer}>
         <div style={styles.authCard}>
-          <h2 style={{ textAlign: "center", color: "#1e293b" }}>
-            {isRegistering ? "Tạo tài khoản UET" : "Hệ thống RAG Học vụ"}
+          {/* Logo */}
+          <div style={styles.authLogoWrap}>
+            <div style={styles.authLogo}>🎓</div>
+          </div>
+          <h2 style={styles.authTitle}>
+            {isRegistering ? "Tạo tài khoản" : "UET Assistant"}
           </h2>
+          <p style={styles.authSubtitle}>
+            {isRegistering
+              ? "Điền thông tin bên dưới để đăng ký"
+              : "Trợ lý học vụ thông minh của UET"}
+          </p>
           <form onSubmit={handleAuth} style={styles.form}>
-            <input
-              style={styles.input}
-              placeholder="Username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+            <div style={styles.inputWrap}>
+              <span style={styles.inputIcon}>👤</span>
+              <input
+                style={styles.input}
+                placeholder="Tên đăng nhập"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+            </div>
+            <div style={styles.inputWrap}>
+              <span style={styles.inputIcon}>🔒</span>
+              <input
+                style={styles.input}
+                type="password"
+                placeholder="Mật khẩu"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
             <button style={styles.primaryBtn} type="submit">
-              {isRegistering ? "Đăng ký" : "Vào Chat"}
+              {isRegistering ? "Đăng ký" : "Đăng nhập"}
             </button>
           </form>
-          <p
-            onClick={() => setIsRegistering(!isRegistering)}
-            style={styles.toggleAuth}
-          >
-            {isRegistering ? "Đã có nick? Đăng nhập" : "Chưa có nick? Đăng ký ngay"}
+          <p onClick={() => setIsRegistering(!isRegistering)} style={styles.toggleAuth}>
+            {isRegistering ? "Đã có tài khoản? Đăng nhập" : "Chưa có tài khoản? Đăng ký"}
           </p>
         </div>
       </div>
     );
   }
 
+  // ── Chat UI ───────────────────────────────────────────────
   return (
     <div style={styles.appContainer}>
+      {/* Header */}
       <header style={styles.header}>
-        <b style={{ fontSize: 18, color: "#2563eb" }}>🎓 UET Assistant</b>
-        <button
-          style={styles.logoutBtn}
-          onClick={() => {
-            localStorage.removeItem("token");
-            setToken("");
-          }}
-        >
-          Đăng xuất
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={styles.headerLogo}>🎓</div>
+          <div>
+            <div style={styles.headerTitle}>UET Assistant</div>
+            <div style={styles.headerSubtitle}>Trợ lý học vụ thông minh</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* ✅ Avatar user */}
+          <div style={styles.userAvatar}>
+            {username ? username[0].toUpperCase() : "U"}
+          </div>
+          <button
+            style={styles.logoutBtn}
+            onClick={() => {
+              localStorage.removeItem("token");
+              setToken("");
+              setMessages([]);
+            }}
+          >
+            Đăng xuất
+          </button>
+        </div>
       </header>
 
+      {/* Chat Area */}
       <main style={styles.chatArea}>
+        {/* ✅ Date divider */}
+        {messages.length > 0 && (
+          <div style={styles.dateDivider}>
+            <span style={styles.dateDividerText}>{formatDate()}</span>
+          </div>
+        )}
+
+        {/* Welcome message khi chưa có tin nhắn */}
+        {messages.length === 0 && (
+          <div style={styles.welcomeWrap}>
+            <div style={styles.welcomeIcon}>🎓</div>
+            <h3 style={styles.welcomeTitle}>Xin chào! Tôi là UET Assistant</h3>
+            <p style={styles.welcomeSubtitle}>
+              Hãy hỏi tôi về quy chế học vụ, điều kiện tốt nghiệp, học phí và các thông tin liên quan.
+            </p>
+            <div style={styles.suggestionWrap}>
+              {[
+                "Điều kiện xét tốt nghiệp là gì?",
+                "Quy định về nghỉ học như thế nào?",
+                "Cách tính điểm GPA?",
+              ].map((s, i) => (
+                <button
+                  key={i}
+                  style={styles.suggestionBtn}
+                  onClick={() => setInput(s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {messages.map((msg, idx) => {
           const safeContent = msg.content ? String(msg.content) : "";
           const isUser = msg.role === "user";
@@ -234,18 +406,15 @@ export default function App() {
               key={idx}
               style={isUser ? styles.msgWrapperUser : styles.msgWrapperBot}
             >
-              <div style={styles.avatar}>{isUser ? "👤" : "🤖"}</div>
+              <div style={isUser ? styles.avatarUser : styles.avatarBot}>
+                {isUser ? (username ? username[0].toUpperCase() : "U") : "🤖"}
+              </div>
               <div style={{ maxWidth: "100%", minWidth: 0 }}>
                 <div style={isUser ? styles.userBubble : styles.botBubble}>
-                  {isUser ? (
-                    safeContent
-                  ) : (
-                    // SafeMarkdown bọc Error Boundary + remarkGfm
-                    <SafeMarkdown content={safeContent} />
-                  )}
+                  {isUser ? safeContent : <SafeMarkdown content={safeContent} />}
                 </div>
 
-                {/* Hiển thị Nguồn (Citation) — chỉ với assistant */}
+                {/* Sources */}
                 {isAssistant && msg.sources && (
                   <div style={styles.sourceContainer}>
                     {(() => {
@@ -255,44 +424,85 @@ export default function App() {
                           typeof msg.sources === "string"
                             ? JSON.parse(msg.sources)
                             : msg.sources;
-                      } catch (e) {
+                      } catch {
                         return null;
                       }
-                      if (!Array.isArray(parsed) || parsed.length === 0)
-                        return null;
+                      if (!Array.isArray(parsed) || parsed.length === 0) return null;
                       return parsed.map((src, sIdx) => (
-                        <span key={sIdx} style={styles.sourceTag}>
-                          📄 {src?.filename || "Tài liệu"} (Trang{" "}
-                          {src?.page || "?"})
+                        <span
+                          key={sIdx}
+                          style={{ ...styles.sourceTag, cursor: "pointer" }}
+                          onClick={() => handleSourceClick(src)}
+                          title="Click để xem tài liệu gốc"
+                        >
+                          📄 {src?.filename} · Tr.{src?.page}
                         </span>
                       ));
                     })()}
+                  </div>
+                )}
+
+                {/* ✅ Timestamp */}
+                {msg.time && (
+                  <div style={{
+                    fontSize: 11,
+                    color: "#94a3b8",
+                    marginTop: 3,
+                    textAlign: isUser ? "right" : "left",
+                  }}>
+                    {msg.time}
                   </div>
                 )}
               </div>
             </div>
           );
         })}
+
+        {/* ✅ Typing indicator */}
         {loading && (
-          <div style={styles.loading}>🤖 Bot đang đọc tài liệu...</div>
+          <div style={styles.msgWrapperBot}>
+            <div style={{ ...styles.avatarBot, animation: "spin 1s linear infinite" }}>
+              🤖
+            </div>
+            <div style={{ ...styles.botBubble, padding: "12px 18px", display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={styles.spinner} />
+              <span style={{ color: "#94a3b8", fontSize: 13, fontStyle: "italic" }}>
+                Đang đọc tài liệu...
+              </span>
+            </div>
+          </div>
         )}
+
         <div ref={bottomRef} />
       </main>
 
+      {/* Footer */}
       <footer style={styles.footer}>
         <form onSubmit={sendMessage} style={styles.inputGroup}>
           <input
             style={styles.chatInput}
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Hỏi tôi bất cứ gì về quy chế học vụ..."
+            placeholder="Hỏi về quy chế, học phí, lịch học..."
             disabled={loading}
           />
-          <button style={styles.sendBtn} type="submit" disabled={loading}>
-            {loading ? "..." : "Gửi"}
+          {/* ✅ Visual feedback khi disabled */}
+          <button
+            style={{
+              ...styles.sendBtn,
+              opacity: loading || !input.trim() ? 0.5 : 1,
+              cursor: loading || !input.trim() ? "not-allowed" : "pointer",
+              transform: loading ? "scale(0.95)" : "scale(1)",
+              transition: "all 0.15s ease",
+            }}
+            type="submit"
+            disabled={loading || !input.trim()}
+          >
+            {loading ? "⏳" : "➤"}
           </button>
         </form>
       </footer>
+      <PDFModal modal={pdfModal} onClose={() => setPdfModal(null)} token={token} />
     </div>
   );
 }
@@ -302,162 +512,302 @@ const styles = {
     display: "flex",
     flexDirection: "column",
     height: "100vh",
-    background: "#f8fafc",
+    background: "#f1f5f9",
   },
+
+  // ── Header ──
   header: {
-    padding: "15px 25px",
-    background: "#fff",
-    borderBottom: "1px solid #e2e8f0",
+    padding: "12px 20px",
+    background: "#1e3a8a",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    flexShrink: 0, // Fix: header không bị co lại
+    flexShrink: 0,
   },
+  headerLogo: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    background: "rgba(255,255,255,0.15)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 18,
+  },
+  headerTitle: { fontSize: 15, fontWeight: 700, color: "#fff" },
+  headerSubtitle: { fontSize: 11, color: "#93c5fd" },
+  userAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: "50%",
+    background: "#3b82f6",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 12,
+    color: "#fff",
+    fontWeight: 700,
+  },
+  logoutBtn: {
+    padding: "5px 12px",
+    borderRadius: 7,
+    border: "1px solid rgba(255,255,255,0.25)",
+    background: "rgba(255,255,255,0.1)",
+    color: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+  },
+
+  // ── Chat ──
   chatArea: {
     flex: 1,
     overflowY: "auto",
     padding: "20px",
     display: "flex",
     flexDirection: "column",
-    gap: "20px",
+    gap: "16px",
   },
+  dateDivider: { textAlign: "center", margin: "4px 0" },
+  dateDividerText: {
+    fontSize: 11,
+    color: "#94a3b8",
+    background: "#e2e8f0",
+    padding: "2px 12px",
+    borderRadius: 10,
+  },
+
+  // ── Welcome ──
+  welcomeWrap: {
+    textAlign: "center",
+    padding: "40px 20px",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 12,
+  },
+  welcomeIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
+    background: "#1e3a8a",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 32,
+  },
+  welcomeTitle: { fontSize: 20, fontWeight: 700, color: "#1e293b", margin: 0 },
+  welcomeSubtitle: { fontSize: 14, color: "#64748b", maxWidth: 400, margin: 0 },
+  suggestionWrap: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 8 },
+  suggestionBtn: {
+    padding: "8px 14px",
+    borderRadius: 20,
+    border: "1px solid #bfdbfe",
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    fontSize: 13,
+    cursor: "pointer",
+    fontWeight: 500,
+  },
+
+  // ── Messages ──
   msgWrapperUser: {
     alignSelf: "flex-end",
     display: "flex",
     flexDirection: "row-reverse",
-    gap: "12px",
-    maxWidth: "85%",
+    gap: 10,
+    maxWidth: "80%",
   },
   msgWrapperBot: {
     alignSelf: "flex-start",
     display: "flex",
-    gap: "12px",
-    maxWidth: "85%",
+    gap: 10,
+    maxWidth: "80%",
   },
-  avatar: {
-    width: 35,
-    height: 35,
+  avatarUser: {
+    width: 30,
+    height: 30,
     borderRadius: "50%",
-    background: "#e2e8f0",
+    background: "#3b82f6",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    fontSize: 18,
-    flexShrink: 0, // Fix: avatar không bị co khi content dài
+    fontSize: 12,
+    color: "#fff",
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+  avatarBot: {
+    width: 30,
+    height: 30,
+    borderRadius: "50%",
+    background: "#1e3a8a",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 16,
+    flexShrink: 0,
   },
   userBubble: {
-    background: "#2563eb",
+    background: "linear-gradient(135deg, #1d4ed8, #3b82f6)",
     color: "#fff",
-    padding: "12px 18px",
-    borderRadius: "18px 18px 2px 18px",
-    boxShadow: "0 2px 4px rgba(37, 99, 235, 0.2)",
-    wordBreak: "break-word", // Fix: tránh overflow ngang
+    padding: "10px 16px",
+    borderRadius: "16px 16px 4px 16px",
+    boxShadow: "0 2px 8px rgba(37,99,235,0.25)",
+    wordBreak: "break-word",
+    fontSize: 14,
   },
   botBubble: {
     background: "#fff",
-    border: "1px solid #e2e8f0",
-    padding: "15px 20px",
-    borderRadius: "2px 18px 18px 18px",
+    border: "0.5px solid #e2e8f0",
+    padding: "12px 18px",
+    borderRadius: "4px 16px 16px 16px",
     color: "#1e293b",
     lineHeight: "1.6",
-    boxShadow: "0 2px 4px rgba(0,0,0,0.02)",
-    wordBreak: "break-word", // Fix: tránh overflow ngang với code/url dài
-    overflowX: "auto",       // Fix: bảng markdown có thể scroll ngang
+    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+    wordBreak: "break-word",
+    overflowX: "auto",
+    fontSize: 14,
   },
   sourceContainer: {
-    marginTop: "8px",
+    marginTop: 6,
     display: "flex",
     flexWrap: "wrap",
-    gap: "6px",
+    gap: 5,
   },
   sourceTag: {
-    fontSize: "11px",
-    background: "#f1f5f9",
-    color: "#64748b",
-    padding: "4px 10px",
-    borderRadius: "6px",
-    border: "1px solid #e2e8f0",
+    fontSize: 11,
+    background: "#eff6ff",
+    color: "#1d4ed8",
+    padding: "3px 9px",
+    borderRadius: 6,
+    border: "0.5px solid #bfdbfe",
   },
+
+  // ── Footer ──
   footer: {
-    padding: "20px",
+    padding: "14px 20px",
     background: "#fff",
-    borderTop: "1px solid #e2e8f0",
-    flexShrink: 0, // Fix: footer không bị co lại
+    borderTop: "0.5px solid #e2e8f0",
+    flexShrink: 0,
   },
   inputGroup: {
     display: "flex",
-    gap: "10px",
+    gap: 10,
     maxWidth: "900px",
     margin: "0 auto",
+    background: "#f8fafc",
+    border: "0.5px solid #e2e8f0",
+    borderRadius: 14,
+    padding: "6px 8px",
+    alignItems: "center",
   },
   chatInput: {
     flex: 1,
-    padding: "12px 20px",
-    borderRadius: "25px",
-    border: "1px solid #cbd5e1",
+    padding: "8px 12px",
+    border: "none",
     outline: "none",
-    fontSize: "14px",
+    fontSize: 14,
+    background: "transparent",
+    color: "#1e293b",
   },
   sendBtn: {
-    padding: "10px 25px",
-    borderRadius: "25px",
+    width: 36,
+    height: 36,
+    borderRadius: 9,
     border: "none",
-    background: "#2563eb",
+    background: "#1e3a8a",
     color: "#fff",
     fontWeight: "bold",
-    cursor: "pointer",
-    opacity: 1,
+    fontSize: 15,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   },
 
-  // Auth
+  // ── Auth ──
   authContainer: {
     height: "100vh",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "#f1f5f9",
+    background: "linear-gradient(135deg, #0f172a, #1e3a8a)",
   },
   authCard: {
     background: "#fff",
     padding: "40px",
-    borderRadius: "16px",
-    boxShadow: "0 10px 25px rgba(0,0,0,0.05)",
-    width: "350px",
+    borderRadius: 20,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+    width: 360,
   },
-  form: {
+  authLogoWrap: { display: "flex", justifyContent: "center", marginBottom: 16 },
+  authLogo: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    background: "#1e3a8a",
     display: "flex",
-    flexDirection: "column",
-    gap: "15px",
-    marginTop: "20px",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 28,
   },
-  input: { padding: "12px", borderRadius: "8px", border: "1px solid #ddd" },
+  authTitle: {
+    textAlign: "center",
+    color: "#0f172a",
+    fontSize: 22,
+    fontWeight: 700,
+    margin: "0 0 6px",
+  },
+  authSubtitle: {
+    textAlign: "center",
+    color: "#64748b",
+    fontSize: 13,
+    margin: "0 0 24px",
+  },
+  form: { display: "flex", flexDirection: "column", gap: 14 },
+  inputWrap: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 14px",
+    borderRadius: 10,
+    border: "1px solid #e2e8f0",
+    background: "#f8fafc",
+  },
+  inputIcon: { fontSize: 16, flexShrink: 0 },
+  input: {
+    flex: 1,
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    fontSize: 14,
+    color: "#1e293b",
+  },
   primaryBtn: {
     padding: "12px",
-    borderRadius: "8px",
+    borderRadius: 10,
     border: "none",
-    background: "#2563eb",
+    background: "#1e3a8a",
     color: "#fff",
-    fontWeight: "bold",
+    fontWeight: 700,
+    fontSize: 15,
     cursor: "pointer",
   },
   toggleAuth: {
     textAlign: "center",
-    marginTop: "15px",
+    marginTop: 16,
     color: "#2563eb",
     cursor: "pointer",
-    fontSize: "14px",
+    fontSize: 13,
   },
-  logoutBtn: {
-    padding: "6px 15px",
-    borderRadius: "8px",
-    border: "1px solid #e2e8f0",
-    background: "#fff",
-    cursor: "pointer",
+  spinner: {
+  width: 18,
+  height: 18,
+  borderRadius: "50%",
+  border: "2px solid #e2e8f0",
+  borderTopColor: "#1e3a8a",
+  animation: "spin 0.8s linear infinite",
+  flexShrink: 0,
   },
-  loading: {
-    textAlign: "center",
-    color: "#64748b",
-    fontSize: "13px",
-    fontStyle: "italic",
-  },
+  
 };

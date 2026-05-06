@@ -49,3 +49,11 @@ def delete_file(key: str):
 def download_file_to_path(key: str, file_path: str):
     client = get_minio_client()
     client.fget_object(BUCKET_NAME, key, file_path)
+
+def get_file_stream(minio_key: str) -> io.BytesIO:
+    client = get_minio_client()
+    response = client.get_object(BUCKET_NAME, minio_key)
+    data = response.read()
+    response.close()
+    response.release_conn()
+    return io.BytesIO(data)
