@@ -20,6 +20,11 @@ export default function AdminApp() {
   const [newPassword, setNewPassword] = useState("");
   const [refreshing, setRefreshing] = useState(false); // ✅ Trạng thái refresh
 
+  // Form đổi mật khẩu admin
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [adminNewUsername, setAdminNewUsername] = useState("");
+  const [adminNewPassword, setAdminNewPassword] = useState("");
+
   const headers = { Authorization: `Bearer ${token}` };
 
   useEffect(() => {
@@ -128,6 +133,36 @@ export default function AdminApp() {
     }
   };
 
+  const updateAdminCredentials = async (e) => {
+    e.preventDefault();
+    if (!currentPassword) return alert("Vui lòng nhập mật khẩu hiện tại để xác thực!");
+    if (!adminNewUsername && !adminNewPassword) return alert("Vui lòng nhập tài khoản hoặc mật khẩu mới!");
+
+    const res = await fetch(`${API}/auth/update-credentials`, {
+      method: "PUT",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_username: adminNewUsername || null,
+        new_password: adminNewPassword || null,
+      }),
+    });
+
+    const data = await res.json();
+    if (res.ok) {
+      alert("Cập nhật thành công!");
+      setCurrentPassword("");
+      setAdminNewUsername("");
+      setAdminNewPassword("");
+      if (data.access_token) {
+        localStorage.setItem("adminToken", data.access_token);
+        setToken(data.access_token);
+      }
+    } else {
+      alert(data.detail || "Cập nhật thất bại!");
+    }
+  };
+
   // ── Login ─────────────────────────────────────────────────
   if (!token) {
     return (
@@ -169,6 +204,12 @@ export default function AdminApp() {
           >
             <span>👥</span> Người dùng
           </div>
+          <div
+            style={tab === "settings" ? styles.sideItemActive : styles.sideItem}
+            onClick={() => setTab("settings")}
+          >
+            <span>🔒</span> Bảo mật
+          </div>
         </nav>
 
         {/* ✅ Stats nhỏ ở sidebar */}
@@ -201,12 +242,14 @@ export default function AdminApp() {
         <header style={styles.contentHeader}>
           <div>
             <h1 style={styles.contentTitle}>
-              {tab === "documents" ? "Quản lý Tài liệu RAG" : "Quản lý Người dùng"}
+              {tab === "documents" && "Quản lý Tài liệu RAG"}
+              {tab === "users" && "Quản lý Người dùng"}
+              {tab === "settings" && "Bảo mật tài khoản"}
             </h1>
             <p style={styles.contentSubtitle}>
-              {tab === "documents"
-                ? `${documents.length} tài liệu · ${documents.filter(d => d.status === "done").length} đã xử lý`
-                : `${users.length} người dùng · ${users.filter(u => u.is_admin).length} admin`}
+              {tab === "documents" && `${documents.length} tài liệu · ${documents.filter(d => d.status === "done").length} đã xử lý`}
+              {tab === "users" && `${users.length} người dùng · ${users.filter(u => u.is_admin).length} admin`}
+              {tab === "settings" && "Cập nhật tài khoản và mật khẩu quản trị"}
             </p>
           </div>
 
@@ -253,7 +296,42 @@ export default function AdminApp() {
           </div>
         )}
 
+        {/* Update Credentials Form */}
+        {tab === "settings" && (
+          <form style={styles.createUserCard} onSubmit={updateAdminCredentials}>
+            <p style={styles.createUserLabel}>Thay đổi thông tin đăng nhập Admin</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400 }}>
+              <input
+                style={styles.formInput}
+                type="password"
+                placeholder="Mật khẩu hiện tại (Bắt buộc) *"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                required
+              />
+              <div style={{ height: 1, background: "#f1f5f9", margin: "4px 0" }} />
+              <input
+                style={styles.formInput}
+                placeholder="Tên đăng nhập mới (Tùy chọn)"
+                value={adminNewUsername}
+                onChange={(e) => setAdminNewUsername(e.target.value)}
+              />
+              <input
+                style={styles.formInput}
+                type="password"
+                placeholder="Mật khẩu mới (Tùy chọn)"
+                value={adminNewPassword}
+                onChange={(e) => setAdminNewPassword(e.target.value)}
+              />
+              <button type="submit" style={{ ...styles.uploadBtn, marginTop: 8 }}>
+                ✓ Cập nhật
+              </button>
+            </div>
+          </form>
+        )}
+
         {/* Table */}
+        {(tab === "documents" || tab === "users") && (
         <div style={styles.tableCard}>
           <table style={styles.table}>
             <thead>
@@ -358,6 +436,7 @@ export default function AdminApp() {
             </tbody>
           </table>
         </div>
+        )}
       </main>
     </div>
   );

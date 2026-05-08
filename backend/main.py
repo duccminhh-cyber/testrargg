@@ -16,7 +16,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from models import Base, User, Document, IngestStatus, ChatMessage
 from database import engine, SessionLocal, get_db
 from services.minio_service import upload_file, delete_file, get_file_stream  # ✅ 1 dòng import duy nhất
-from services.rag_service import query_rag, delete_document_vectors, ensure_collection
+from services.rag_service import query_rag, query_rag_stream, delete_document_vectors, ensure_collection
 from celery_worker import ingest_document_task
 import uuid
 
@@ -41,8 +41,20 @@ class UserRegister(BaseModel):
     username: str
     password: str
 
+from typing import Optional
+class UpdateCredentialsRequest(BaseModel):
+    current_password: str
+    new_username: Optional[str] = None
+    new_password: Optional[str] = None
+
 class ChatRequest(BaseModel):
     question: str
+    selected_doc_ids: list[int] = []
+    session_id: Optional[int] = None
+
+class SessionCreate(BaseModel):
+    title: str = "Cuộc trò chuyện mới"
+    selected_docs: list[int] = []
 
 def verify_password(plain, hashed):
     return pwd_context.verify(plain, hashed)
@@ -89,6 +101,62 @@ def register(user: UserRegister, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "User created successfully"}
 
+@app.put("/api/auth/update-credentials")
+def update_credentials(
+    req: UpdateCredentialsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    if not verify_password(req.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Mật khẩu hiện tại không chính xác")
+        
+    if req.new_username and req.new_username != current_user.username:
+        if db.query(User).filter(User.username == req.new_username).first():
+            raise HTTPException(status_code=400, detail="Tài khoản này đã tồn tại")
+        current_user.username = req.new_username
+        
+    if req.new_password:
+        current_user.hashed_password = hash_password(req.new_password)
+        
+    db.commit()
+    # Nếu đổi username thành công, trả về token mới để không bị văng ra
+    new_token = create_token({"sub": current_user.username})
+    return {"message": "Cập nhật thành công", "access_token": new_token}
+
+# ── Chat Session Routes ───────────────────────────────────────
+@app.post("/api/chat/sessions")
+def create_session(req: SessionCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from models import ChatSession
+    session = ChatSession(user_id=current_user.id, title=req.title, selected_docs=req.selected_docs)
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+@app.get("/api/chat/sessions")
+def get_sessions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from models import ChatSession
+    return db.query(ChatSession).filter(ChatSession.user_id == current_user.id).order_by(ChatSession.created_at.desc()).all()
+
+@app.put("/api/chat/sessions/{session_id}")
+def update_session(session_id: int, req: SessionCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from models import ChatSession
+    session = db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == current_user.id).first()
+    if session:
+        session.title = req.title
+        session.selected_docs = req.selected_docs
+        db.commit()
+        db.refresh(session)
+        return session
+    raise HTTPException(status_code=404, detail="Session not found")
+
+@app.delete("/api/chat/sessions/{session_id}")
+def delete_session(session_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    from models import ChatSession
+    db.query(ChatSession).filter(ChatSession.id == session_id, ChatSession.user_id == current_user.id).delete()
+    db.commit()
+    return {"message": "ok"}
+
 # ── Chat Routes ───────────────────────────────────────────────
 @app.post("/api/chat/query")
 def chat_query(
@@ -100,9 +168,27 @@ def chat_query(
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
 
+    session_id = request.session_id
+    from models import ChatSession
+    
+    # Logic tự động tạo Tên cuộc trò chuyện từ câu hỏi đầu tiên
+    is_new_session = False
+    if not session_id:
+        title = question[:30] + "..." if len(question) > 30 else question
+        new_session = ChatSession(
+            user_id=current_user.id,
+            title=title,
+            selected_docs=request.selected_doc_ids
+        )
+        db.add(new_session)
+        db.commit()
+        db.refresh(new_session)
+        session_id = new_session.id
+        is_new_session = True
+
     recent_messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.user_id == current_user.id)
+        .filter(ChatMessage.user_id == current_user.id, ChatMessage.session_id == session_id)
         .order_by(ChatMessage.created_at.desc())
         .limit(6)
         .all()
@@ -113,27 +199,50 @@ def chat_query(
         for msg in recent_messages
     ]
 
-    user_msg = ChatMessage(user_id=current_user.id, role="user", content=question)
+    user_msg = ChatMessage(user_id=current_user.id, session_id=session_id, role="user", content=question)
     db.add(user_msg)
-
-    result = query_rag(question, chat_history=chat_history)
-
-    answer = result.get("answer", "")
-    sources = result.get("sources", [])
-
-    bot_msg = ChatMessage(
-        user_id=current_user.id,
-        role="bot",
-        content=answer,
-        sources=sources if sources else []
-    )
-    db.add(bot_msg)
     db.commit()
 
-    return result
+    def generate():
+        if is_new_session:
+            yield json.dumps({"type": "session_created", "data": {"id": session_id, "title": title}}) + "\n"
+        
+        full_content = ""
+        final_sources = []
+        try:
+            for chunk in query_rag_stream(question, chat_history=chat_history, selected_doc_ids=request.selected_doc_ids):
+                yield chunk
+                try:
+                    parsed = json.loads(chunk.strip())
+                    if parsed.get("type") == "chunk":
+                        full_content += parsed.get("data", "")
+                    elif parsed.get("type") == "sources":
+                        final_sources = parsed.get("data", [])
+                except json.JSONDecodeError:
+                    pass
+            
+            # Save the bot response
+            # Note: We create a NEW session here or just reuse db. 
+            # In FastAPI generator, `db` might be closed if not careful. 
+            # But the Depends(get_db) is yielded, and will only close after StreamingResponse finishes.
+            bot_msg = ChatMessage(
+                user_id=current_user.id,
+                session_id=session_id,
+                role="bot",
+                content=full_content,
+                sources=final_sources
+            )
+            db.add(bot_msg)
+            db.commit()
+            
+        except Exception as e:
+            yield json.dumps({"type": "error", "data": str(e)}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 @app.get("/api/chat/history")
 def get_chat_history(
+    session_id: int,
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
@@ -141,9 +250,10 @@ def get_chat_history(
 ):
     messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.user_id == current_user.id)
+        .filter(ChatMessage.user_id == current_user.id, ChatMessage.session_id == session_id)
         .order_by(ChatMessage.created_at.asc())
-        .offset(skip).limit(limit)
+        .offset(skip)
+        .limit(limit)
         .all()
     )
     result = []
@@ -323,6 +433,15 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin: User = Depen
 def startup_event():
     """Khởi tạo DB, Qdrant collection và tài khoản admin mặc định."""
     Base.metadata.create_all(bind=engine)
+    
+    # Auto migrate thêm column session_id nếu thiếu
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN session_id INTEGER REFERENCES chat_sessions(id) ON DELETE CASCADE"))
+        except Exception:
+            pass # Cột đã tồn tại
+            
     ensure_collection()
     db = SessionLocal()
     try:
