@@ -107,7 +107,7 @@ def delete_document_vectors(doc_id: int):
         logger.error(f"❌ Lỗi xóa vectors doc_id={doc_id}: {e}")
         raise
 
-def query_rag(question: str, k: int = 5, chat_history: list = []):
+def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_ids: list = None):
     max_retries = 3
     retry_delays = [20, 40, 60]
 
@@ -119,10 +119,22 @@ def query_rag(question: str, k: int = 5, chat_history: list = []):
                 embedding=get_embeddings(),
             )
 
-            # ✅ Cải tiến 2+3: Lấy 15 docs trước để rerank, threshold thấp hơn để không bỏ sót
+            # ✅ Cải tiến: Hỗ trợ lọc theo file (NotebookLM style)
+            search_kwargs = {"k": 15, "score_threshold": 0.4}
+            if selected_doc_ids:
+                from qdrant_client.models import Filter, FieldCondition, MatchAny
+                search_kwargs["filter"] = Filter(
+                    must=[
+                        FieldCondition(
+                            key="metadata.doc_id",
+                            match=MatchAny(any=selected_doc_ids)
+                        )
+                    ]
+                )
+
             retriever = vectorstore.as_retriever(
                 search_type="similarity_score_threshold",
-                search_kwargs={"k": 15, "score_threshold": 0.4}
+                search_kwargs=search_kwargs
             )
 
             llm = ChatOpenAI(
@@ -161,16 +173,12 @@ def query_rag(question: str, k: int = 5, chat_history: list = []):
                     reranker = get_reranker()
                     pairs = [[question, doc.page_content] for doc in retrieved_docs]
                     scores = reranker.predict(pairs)
-                    # Sắp xếp theo score giảm dần, lấy top k
-                    ranked = sorted(
-                        zip(scores, retrieved_docs),
-                        key=lambda x: x[0],
-                        reverse=True
-                    )
+                    # Lọc bỏ các doc rác (điểm rerank < 0) và lấy top k
+                    ranked = [(score, doc) for score, doc in zip(scores, retrieved_docs) if score > 0]
+                    ranked = sorted(ranked, key=lambda x: x[0], reverse=True)
                     retrieved_docs = [doc for _, doc in ranked[:k]]
-                    logger.info(f"✅ Reranked: {len(pairs)} → {k} docs")
+                    logger.info(f"✅ Reranked: {len(pairs)} → {len(retrieved_docs)} docs")
                 except Exception as re:
-                    # Nếu rerank lỗi thì vẫn dùng top k bình thường
                     logger.warning(f"⚠️ Rerank thất bại, dùng top {k} mặc định: {re}")
                     retrieved_docs = retrieved_docs[:k]
             elif retrieved_docs:
@@ -255,3 +263,105 @@ def query_rag(question: str, k: int = 5, chat_history: list = []):
                     "answer": "⚠️ Hệ thống gặp sự cố, vui lòng thử lại sau.",
                     "sources": []
                 }
+
+def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selected_doc_ids: list = None):
+    import json
+    
+    yield json.dumps({"type": "status", "data": "🔍 Đang tìm kiếm tài liệu..."}) + "\n"
+    
+    try:
+        vectorstore = QdrantVectorStore(
+            client=get_qdrant_client(),
+            collection_name=COLLECTION_NAME,
+            embedding=get_embeddings(),
+        )
+
+        search_kwargs = {"k": 15, "score_threshold": 0.4}
+        if selected_doc_ids:
+            from qdrant_client.models import Filter, FieldCondition, MatchAny
+            search_kwargs["filter"] = Filter(
+                must=[FieldCondition(key="metadata.doc_id", match=MatchAny(any=selected_doc_ids))]
+            )
+
+        retriever = vectorstore.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs=search_kwargs
+        )
+
+        llm = ChatOpenAI(
+            model=CHATGPT_MODEL,
+            api_key=GITHUB_TOKEN,
+            base_url="https://models.github.ai/inference",
+            streaming=True # Quan trọng để stream
+        )
+
+        def format_history(history):
+            if not history: return ""
+            return "\n".join([f"{'Sinh viên' if m['role']=='user' else 'Trợ lý'}: {m['content']}" for m in history])
+
+        prompt = ChatPromptTemplate.from_template(
+            "Bạn là trợ lý học vụ thông minh của UET.\n\n"
+            "LUẬT QUAN TRỌNG:\n"
+            "1. Nếu câu hỏi là lời chào hoặc giao tiếp thông thường, hãy tự giới thiệu thân thiện.\n"
+            "2. Với câu hỏi chuyên môn, trả lời chi tiết bằng Markdown DỰA HOÀN TOÀN VÀO NGỮ CẢNH.\n"
+            "3. Nếu câu hỏi liên quan đến cuộc trò chuyện trước, dùng Lịch sử hội thoại để hiểu đúng ý.\n"
+            "4. Nếu ngữ cảnh trống, hãy nói: 'Tôi chưa có thông tin về vấn đề này trong tài liệu hiện tại'.\n\n"
+            "Lịch sử hội thoại gần đây:\n{history}\n\n"
+            "Ngữ cảnh từ tài liệu:\n{context}\n\n"
+            "Câu hỏi hiện tại: {question}"
+        )
+
+        retrieved_docs = retriever.invoke(question)
+        yield json.dumps({"type": "status", "data": f"📑 Tìm thấy {len(retrieved_docs)} đoạn tài liệu có thể liên quan..."}) + "\n"
+
+        if retrieved_docs and len(retrieved_docs) > k:
+            yield json.dumps({"type": "status", "data": "⚙️ Đang phân tích và lọc độ phù hợp (Reranking)..."}) + "\n"
+            try:
+                reranker = get_reranker()
+                pairs = [[question, doc.page_content] for doc in retrieved_docs]
+                scores = reranker.predict(pairs)
+                ranked = [(score, doc) for score, doc in zip(scores, retrieved_docs) if score > 0]
+                ranked = sorted(ranked, key=lambda x: x[0], reverse=True)
+                retrieved_docs = [doc for _, doc in ranked[:k]]
+            except Exception as re:
+                logger.warning(f"Rerank failed: {re}")
+                retrieved_docs = retrieved_docs[:k]
+        elif retrieved_docs:
+            retrieved_docs = retrieved_docs[:k]
+
+        def format_docs(docs):
+            if not docs: return ""
+            return "\n\n---\n\n".join([f"[Nguồn: {d.metadata.get('filename')}, Trang: {d.metadata.get('page')}]\nNội dung: {d.page_content}" for d in docs])
+
+        sources = [{"filename": d.metadata.get("filename", "unknown"), "page": d.metadata.get("page", "?")} for d in retrieved_docs]
+        unique_sources = []
+        seen = set()
+        for s in sources:
+            pair = (s['filename'], s['page'])
+            if pair not in seen:
+                unique_sources.append(s)
+                seen.add(pair)
+                
+        yield json.dumps({"type": "sources", "data": unique_sources}) + "\n"
+        
+        if not retrieved_docs:
+            yield json.dumps({"type": "status", "data": "💬 Đang trả lời (Giao tiếp thông thường)..."}) + "\n"
+        else:
+            yield json.dumps({"type": "status", "data": "💡 Đang tổng hợp câu trả lời từ tài liệu..."}) + "\n"
+
+        chain = (
+            {
+                "context": lambda _: format_docs(retrieved_docs),
+                "history": lambda _: format_history(chat_history),
+                "question": RunnablePassthrough()
+            }
+            | prompt
+            | llm
+        )
+
+        for chunk in chain.stream(question):
+            yield json.dumps({"type": "chunk", "data": chunk.content}) + "\n"
+
+    except Exception as e:
+        logger.error(f"Streaming error: {e}")
+        yield json.dumps({"type": "error", "data": str(e)}) + "\n"
