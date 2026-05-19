@@ -1,6 +1,7 @@
 import os
 import logging
 import time
+import unicodedata
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -19,8 +20,28 @@ logger = logging.getLogger(__name__)
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "rag_documents_v2")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_TOKEN = os.getenv("GITHUB_MODELS_TOKEN") or os.getenv("GITHUB_TOKEN")
 CHATGPT_MODEL = os.getenv("CHATGPT_MODEL", "openai/gpt-4.1")
+
+AUTH_ERROR_MESSAGE = (
+    "Dịch vụ AI chưa được cấu hình đúng. Hãy tạo GitHub token có quyền "
+    "`models: read`, đặt vào biến GITHUB_MODELS_TOKEN trong file .env, rồi "
+    "restart backend."
+)
+
+def is_auth_error(error: Exception) -> bool:
+    err = str(error).lower()
+    return "unauthorized" in err or "401" in err or "invalid api key" in err
+
+def get_chat_llm(streaming: bool = False):
+    if not GITHUB_TOKEN:
+        raise RuntimeError(AUTH_ERROR_MESSAGE)
+    return ChatOpenAI(
+        model=CHATGPT_MODEL,
+        api_key=GITHUB_TOKEN,
+        base_url="https://models.github.ai/inference",
+        streaming=streaming,
+    )
 
 _embeddings = None
 _reranker = None  # ✅ Singleton reranker
@@ -43,6 +64,17 @@ def get_reranker():
 
 def get_qdrant_client():
     return QdrantClient(url=QDRANT_URL)
+
+def normalize_text(text: str) -> str:
+    text = unicodedata.normalize("NFD", text or "")
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return text.lower()
+
+def is_document_summary_question(question: str) -> bool:
+    q = normalize_text(question)
+    summary_terms = ("ve cai gi", "noi dung", "tom tat", "la gi", "noi ve gi")
+    doc_terms = ("file", "tai lieu", "pdf", "van ban")
+    return any(term in q for term in doc_terms) and any(term in q for term in summary_terms)
 
 def ensure_collection():
     try:
@@ -113,6 +145,7 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
 
     for attempt in range(max_retries):
         try:
+            summary_question = is_document_summary_question(question)
             vectorstore = QdrantVectorStore(
                 client=get_qdrant_client(),
                 collection_name=COLLECTION_NAME,
@@ -120,7 +153,9 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
             )
 
             # ✅ Cải tiến: Hỗ trợ lọc theo file (NotebookLM style)
-            search_kwargs = {"k": 15, "score_threshold": 0.4}
+            search_kwargs = {"k": 15}
+            if not summary_question:
+                search_kwargs["score_threshold"] = 0.4
             if selected_doc_ids:
                 from qdrant_client.models import Filter, FieldCondition, MatchAny
                 search_kwargs["filter"] = Filter(
@@ -133,15 +168,11 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
                 )
 
             retriever = vectorstore.as_retriever(
-                search_type="similarity_score_threshold",
+                search_type="similarity" if summary_question else "similarity_score_threshold",
                 search_kwargs=search_kwargs
             )
 
-            llm = ChatOpenAI(
-                model=CHATGPT_MODEL,
-                api_key=GITHUB_TOKEN,
-                base_url="https://models.github.ai/inference",
-            )
+            llm = get_chat_llm()
 
             def format_history(history):
                 if not history:
@@ -165,10 +196,13 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
             )
 
             # Lấy docs từ Qdrant
-            retrieved_docs = retriever.invoke(question)
+            retrieval_query = "tóm tắt nội dung chính của tài liệu" if summary_question else question
+            retrieved_docs = retriever.invoke(retrieval_query)
 
             # ✅ Cải tiến 3: Reranking — chỉ giữ top k docs liên quan nhất
-            if retrieved_docs and len(retrieved_docs) > k:
+            if summary_question and retrieved_docs:
+                retrieved_docs = retrieved_docs[:k]
+            elif retrieved_docs and len(retrieved_docs) > k:
                 try:
                     reranker = get_reranker()
                     pairs = [[question, doc.page_content] for doc in retrieved_docs]
@@ -246,6 +280,13 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
                     "sources": []
                 }
 
+            elif is_auth_error(e):
+                logger.error("GitHub Models authentication failed. Check GITHUB_MODELS_TOKEN models:read permission.")
+                return {
+                    "answer": AUTH_ERROR_MESSAGE,
+                    "sources": []
+                }
+
             elif "503" in err_str or "unavailable" in err_str.lower():
                 wait = retry_delays[attempt] if attempt < len(retry_delays) else 60
                 logger.warning(f"⏳ Server 503 (lần {attempt+1}/{max_retries}), chờ {wait}s...")
@@ -270,13 +311,16 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
     yield json.dumps({"type": "status", "data": "🔍 Đang tìm kiếm tài liệu..."}) + "\n"
     
     try:
+        summary_question = is_document_summary_question(question)
         vectorstore = QdrantVectorStore(
             client=get_qdrant_client(),
             collection_name=COLLECTION_NAME,
             embedding=get_embeddings(),
         )
 
-        search_kwargs = {"k": 15, "score_threshold": 0.4}
+        search_kwargs = {"k": 15}
+        if not summary_question:
+            search_kwargs["score_threshold"] = 0.4
         if selected_doc_ids:
             from qdrant_client.models import Filter, FieldCondition, MatchAny
             search_kwargs["filter"] = Filter(
@@ -284,16 +328,11 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
             )
 
         retriever = vectorstore.as_retriever(
-            search_type="similarity_score_threshold",
+            search_type="similarity" if summary_question else "similarity_score_threshold",
             search_kwargs=search_kwargs
         )
 
-        llm = ChatOpenAI(
-            model=CHATGPT_MODEL,
-            api_key=GITHUB_TOKEN,
-            base_url="https://models.github.ai/inference",
-            streaming=True # Quan trọng để stream
-        )
+        llm = get_chat_llm()
 
         def format_history(history):
             if not history: return ""
@@ -311,10 +350,13 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
             "Câu hỏi hiện tại: {question}"
         )
 
-        retrieved_docs = retriever.invoke(question)
+        retrieval_query = "tóm tắt nội dung chính của tài liệu" if summary_question else question
+        retrieved_docs = retriever.invoke(retrieval_query)
         yield json.dumps({"type": "status", "data": f"📑 Tìm thấy {len(retrieved_docs)} đoạn tài liệu có thể liên quan..."}) + "\n"
 
-        if retrieved_docs and len(retrieved_docs) > k:
+        if summary_question and retrieved_docs:
+            retrieved_docs = retrieved_docs[:k]
+        elif retrieved_docs and len(retrieved_docs) > k:
             yield json.dumps({"type": "status", "data": "⚙️ Đang phân tích và lọc độ phù hợp (Reranking)..."}) + "\n"
             try:
                 reranker = get_reranker()
@@ -359,9 +401,12 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
             | llm
         )
 
-        for chunk in chain.stream(question):
-            yield json.dumps({"type": "chunk", "data": chunk.content}) + "\n"
+        response = chain.invoke(question)
+        yield json.dumps({"type": "chunk", "data": response.content}) + "\n"
 
     except Exception as e:
         logger.error(f"Streaming error: {e}")
-        yield json.dumps({"type": "error", "data": str(e)}) + "\n"
+        if is_auth_error(e):
+            yield json.dumps({"type": "error", "data": AUTH_ERROR_MESSAGE}) + "\n"
+        else:
+            yield json.dumps({"type": "error", "data": str(e)}) + "\n"

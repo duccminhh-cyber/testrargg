@@ -45,3 +45,5 @@ db_backups/
 *.njsproj
 *.sln
 *.sw?
+.env
+.env.example

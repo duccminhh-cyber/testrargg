@@ -52,6 +52,10 @@ class ChatRequest(BaseModel):
     selected_doc_ids: list[int] = []
     session_id: Optional[int] = None
 
+SELECT_DOCUMENT_MESSAGE = (
+    "Vui lòng tick chọn ít nhất một tài liệu trong mục Nguồn Tri Thức trước khi đặt câu hỏi."
+)
+
 class SessionCreate(BaseModel):
     title: str = "Cuộc trò chuyện mới"
     selected_docs: list[int] = []
@@ -206,6 +210,20 @@ def chat_query(
     def generate():
         if is_new_session:
             yield json.dumps({"type": "session_created", "data": {"id": session_id, "title": title}}) + "\n"
+
+        if not request.selected_doc_ids:
+            yield json.dumps({"type": "sources", "data": []}) + "\n"
+            yield json.dumps({"type": "chunk", "data": SELECT_DOCUMENT_MESSAGE}) + "\n"
+            bot_msg = ChatMessage(
+                user_id=current_user.id,
+                session_id=session_id,
+                role="bot",
+                content=SELECT_DOCUMENT_MESSAGE,
+                sources=[]
+            )
+            db.add(bot_msg)
+            db.commit()
+            return
         
         full_content = ""
         final_sources = []

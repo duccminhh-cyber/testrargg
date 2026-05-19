@@ -59,7 +59,10 @@ services:
   # ── Application ───────────────────────────────────────────
 
   backend:
-    image: ducminhisme/rag-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    image: testrargg/rag-backend:local
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
@@ -80,7 +83,10 @@ services:
       - "8000"
 
   worker:
-    image: ducminhisme/rag-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.backend
+    image: testrargg/rag-backend:local
     command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=2
     env_file: .env
     environment:
@@ -147,6 +153,8 @@ services:
 
   grafana:
     image: grafana/grafana
+    profiles:
+      - monitoring
     ports:
       - "3000:3000"
     environment:
