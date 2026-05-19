@@ -59,10 +59,7 @@ services:
   # ── Application ───────────────────────────────────────────
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.backend
-    image: my-rag-backend:latest
+    image: ducminhisme/rag-backend:latest
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpassword}@postgres:5432/${POSTGRES_DB:-ragdb}
@@ -83,10 +80,7 @@ services:
       - "8000"
 
   worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.backend
-    image: my-rag-backend:latest
+    image: ducminhisme/rag-backend:latest
     command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=2
     env_file: .env
     environment:
@@ -106,10 +100,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.frontend
-    image: my-rag-frontend:latest
+    image: ducminhisme/rag-frontend:latest
     depends_on:
       - backend
     restart: unless-stopped

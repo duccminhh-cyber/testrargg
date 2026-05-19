@@ -315,6 +315,12 @@ export default function App() {
         const res = await fetch(`${API}/chat/history?session_id=${sessionId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
+        if (res.status === 401) {
+          localStorage.removeItem("token");
+          setToken("");
+          setMessages([]);
+          return;
+        }
         if (res.ok) {
           const data = await res.json();
           setMessages(data);
@@ -390,7 +396,12 @@ export default function App() {
         },
         body: JSON.stringify({ question, selected_doc_ids: selectedDocIds, session_id: currentSessionId }),
       });
-
+      if (res.status === 401) {
+        localStorage.removeItem("token");
+        setToken("");
+        setMessages([]);
+        return;
+      }
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
