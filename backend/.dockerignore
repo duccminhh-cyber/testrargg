@@ -22,6 +22,10 @@ dist/
 build/
 htmlcov/
 .coverage
+*.log
+logs/
+tmp/
+uploads/
 
 # IDE
 .vscode/

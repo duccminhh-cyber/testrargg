@@ -3,7 +3,7 @@ services:
   # ── Infrastructure ────────────────────────────────────────
 
   postgres:
-    image: postgres:15-alpine
+    image: postgres@sha256:df7bca0066e6f60cc3dd32faa70caddec20e2c22b58932f79498e5704b23854a
     environment:
       POSTGRES_USER:     ${POSTGRES_USER:-raguser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ragpassword}
@@ -18,7 +18,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -27,7 +27,7 @@ services:
       retries: 5
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant@sha256:b3063c673f3973877c038eeecc392bad5011f072ee7892b56c9a8e204a3bdea9
     # ✅ Bỏ ports — không expose ra ngoài, chỉ dùng nội bộ
     volumes:
       - qdrant_data:/qdrant/storage
@@ -39,7 +39,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: server /data --console-address ":9001"
     ports:
       # ✅ Chỉ giữ console port 9001 cho dev, bỏ 9000 ra ngoài
@@ -81,6 +81,12 @@ services:
     restart: unless-stopped
     expose:
       - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=3).read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   worker:
     build:
@@ -104,9 +110,18 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os, redis; redis.from_url(os.getenv('REDIS_URL', 'redis://redis:6379/0')).ping()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
 
   frontend:
-    image: ducminhisme/rag-frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    image: testrargg/rag-frontend:local
     depends_on:
       - backend
     restart: unless-stopped
@@ -116,7 +131,7 @@ services:
   # ── Load Balancer ─────────────────────────────────────────
 
   nginx:
-    image: nginx:alpine
+    image: nginx@sha256:dc48b7a872a79fb541ba5081d320b11b549231bc63ba465a7495afaa7d2ebcb8
     ports:
       - "80:80"
     volumes:
@@ -131,7 +146,7 @@ services:
   # ── Bonus: Internet, Monitoring, Backup ──────────────────
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
     # ✅ Dùng named tunnel nếu có token, fallback quick tunnel cho dev
     command: tunnel --url http://nginx:80
     # Nếu có token thật, thay bằng:
@@ -143,7 +158,7 @@ services:
       - nginx
 
   prometheus:
-    image: prom/prometheus
+    image: prom/prometheus@sha256:e4254400b85610324913f0dc4acf92603d9984e7519414c5a12811aa6146acc3
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus  # ✅ Thêm volume để giữ data
@@ -152,7 +167,7 @@ services:
       - backend
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:12.3.0
     profiles:
       - monitoring
     ports:
@@ -166,7 +181,7 @@ services:
     restart: unless-stopped
 
   pg-backup:
-    image: prodrigestivill/postgres-backup-local
+    image: prodrigestivill/postgres-backup-local@sha256:f70742ebe42b2277689b028d1fd15aa80f77cffa01da163cc9f85a6ff1866e7f
     restart: unless-stopped
     volumes:
       - db_backups:/backups

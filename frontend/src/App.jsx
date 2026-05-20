@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -12,12 +12,15 @@ class MarkdownErrorBoundary extends React.Component {
     super(props);
     this.state = { hasError: false };
   }
+
   static getDerivedStateFromError() {
     return { hasError: true };
   }
+
   componentDidCatch(error) {
     console.error("ReactMarkdown crash:", error);
   }
+
   render() {
     if (this.state.hasError) {
       return <span style={{ whiteSpace: "pre-wrap" }}>{this.props.fallback}</span>;
@@ -26,14 +29,11 @@ class MarkdownErrorBoundary extends React.Component {
   }
 }
 
-// ✅ Tiền xử lý LaTeX để tương thích với remark-math
 function preprocessMath(text) {
   if (!text) return "";
-  // Thay thế \[ ... \] bằng $$ ... $$
-  let processed = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, p1) => `$$${p1}$$`);
-  // Thay thế \( ... \) bằng $ ... $
-  processed = processed.replace(/\\\(([\s\S]*?)\\\)/g, (_, p1) => `$${p1}$`);
-  return processed;
+  return text
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, p1) => `$$${p1}$$`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, p1) => `$${p1}$`);
 }
 
 function SafeMarkdown({ content }) {
@@ -51,144 +51,304 @@ function SafeMarkdown({ content }) {
   );
 }
 
-// ✅ Format giờ hiển thị
 const formatTime = () =>
   new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 
-// ✅ Format ngày hiển thị
-const formatDate = () =>
-  new Date().toLocaleDateString("vi-VN", { weekday: "long", day: "numeric", month: "long" });
+const formatDate = (date) => {
+  if (!date) return "Added --";
+  return `Added ${new Date(date).toLocaleDateString("en-US", { month: "short", day: "2-digit" })}`;
+};
 
-// Component làm hiệu ứng dấu ba chấm động
 const AnimatedDots = () => {
   const [dots, setDots] = useState("");
+
   useEffect(() => {
     const interval = setInterval(() => {
-      setDots((prev) => (prev.length >= 3 ? "" : prev + "."));
+      setDots((prev) => (prev.length >= 3 ? "" : `${prev}.`));
     }, 400);
     return () => clearInterval(interval);
   }, []);
-  return <span style={{ display: "inline-block", width: 12, textAlign: "left" }}>{dots}</span>;
+
+  return <span className="typing-dots">{dots}</span>;
 };
 
-function PDFModal({ modal, onClose, token }) {
-  const [blobUrl, setBlobUrl] = useState(null);
+function PDFFrame({ modal, token }) {
+  const [blobUrl, setBlobUrl] = useState("");
   const [loadingPdf, setLoadingPdf] = useState(true);
 
   useEffect(() => {
-    if (!modal) return;
-    setLoadingPdf(true);
-    setBlobUrl(null);
+    let nextUrl = "";
 
-    fetch(modal.url, {
-      headers: { Authorization: `Bearer ${token}` }  // ✅ Gửi token
-    })
-      .then(res => res.blob())
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        setBlobUrl(`${url}#page=${modal.page}`);  // ✅ Scroll đến đúng trang
+    fetch(modal.url, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => res.blob())
+      .then((blob) => {
+        nextUrl = URL.createObjectURL(blob);
+        setBlobUrl(`${nextUrl}#page=${modal.page || 1}`);
         setLoadingPdf(false);
       })
       .catch(() => setLoadingPdf(false));
 
-    // Cleanup blob URL khi đóng modal
     return () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl.split("#")[0]);
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
     };
-  }, [modal]);
+  }, [modal, token]);
 
+  if (loadingPdf) return <div className="pdf-modal__loading">Đang tải tài liệu...</div>;
+
+  return <iframe src={blobUrl} title={modal.filename} className="pdf-modal__iframe" />;
+}
+
+function PDFModal({ modal, onClose, token }) {
   if (!modal) return null;
 
-  return (
-    <div style={modalStyles.overlay} onClick={onClose}>
-      <div style={modalStyles.container} onClick={(e) => e.stopPropagation()}>
-        <div style={modalStyles.header}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 16 }}>📄</span>
-            <div>
-              <div style={modalStyles.title}>{modal.filename}</div>
-              <div style={modalStyles.subtitle}>Trang {modal.page}</div>
-            </div>
-          </div>
-          <button style={modalStyles.closeBtn} onClick={onClose}>✕</button>
-        </div>
+  const frameKey = `${modal.url}:${modal.page || 1}`;
 
-        {/* ✅ Loading state */}
-        {loadingPdf ? (
-          <div style={modalStyles.loading}>
-            <div>⏳ Đang tải tài liệu</div>
+  return (
+    <div className="pdf-modal" onClick={onClose}>
+      <section className="pdf-modal__panel" onClick={(e) => e.stopPropagation()}>
+        <header className="pdf-modal__header">
+          <div>
+            <strong>{modal.filename}</strong>
+            <span>Trang {modal.page || 1}</span>
           </div>
-        ) : (
-          <iframe
-            src={blobUrl}
-            style={modalStyles.iframe}
-            title={modal.filename}
-          />
-        )}
-      </div>
+          <button className="icon-btn" type="button" onClick={onClose} aria-label="Đóng PDF">
+            x
+          </button>
+        </header>
+        <PDFFrame key={frameKey} modal={modal} token={token} />
+      </section>
     </div>
   );
 }
 
+function InlineDocumentPreview({ doc, token, zoom }) {
+  const [blobUrl, setBlobUrl] = useState("");
+  const [failed, setFailed] = useState(false);
 
-const modalStyles = {
-  overlay: {
-    position: "fixed", inset: 0,
-    background: "rgba(0,0,0,0.65)",
-    display: "flex", alignItems: "center", justifyContent: "center",
-    zIndex: 1000,
-    backdropFilter: "blur(4px)",
-  },
-  container: {
-    background: "#fff",
-    borderRadius: 14,
-    width: "82vw", height: "88vh",
-    display: "flex", flexDirection: "column",
-    overflow: "hidden",
-    boxShadow: "0 30px 80px rgba(0,0,0,0.35)",
-  },
-  header: {
-    padding: "12px 16px",
-    background: "#1e3a8a",
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    flexShrink: 0,
-  },
-  title: { color: "#fff", fontWeight: 700, fontSize: 14 },
-  subtitle: { color: "#93c5fd", fontSize: 11 },
-  closeBtn: {
-    width: 30, height: 30,
-    borderRadius: 7,
-    border: "none",
-    background: "rgba(255,255,255,0.15)",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 14,
-    display: "flex", alignItems: "center", justifyContent: "center",
-  },
-  iframe: { flex: 1, border: "none", width: "100%", height: "100%" },
-};
+  useEffect(() => {
+    if (!doc) return undefined;
+
+    let nextUrl = "";
+    let cancelled = false;
+
+    fetch(`/api/documents/${doc.id}/file`, { headers: { Authorization: `Bearer ${token}` } })
+      .then((res) => {
+        if (!res.ok) throw new Error("Cannot load document");
+        return res.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        nextUrl = URL.createObjectURL(blob);
+        setBlobUrl(nextUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+    };
+  }, [doc, token]);
+
+  if (!doc) {
+    return (
+      <div className="document-empty">
+        <h2>No document selected</h2>
+        <p>Vào Library để chọn tài liệu hoặc tải lại danh sách tài liệu.</p>
+      </div>
+    );
+  }
+
+  if (failed) {
+    return (
+      <div className="document-empty">
+        <h2>{doc.filename}</h2>
+        <p>Không thể tải preview file này. Hãy thử mở file bằng nút tải xuống.</p>
+      </div>
+    );
+  }
+
+  if (!blobUrl) {
+    return (
+      <div className="document-empty">
+        <h2>{doc.filename}</h2>
+        <p>Đang tải file đã nạp...</p>
+      </div>
+    );
+  }
+
+  if (doc.ext !== "pdf") {
+    return (
+      <div className="document-empty">
+        <h2>{doc.filename}</h2>
+        <p>Preview trực tiếp hỗ trợ tốt nhất với PDF. File này vẫn được dùng làm context khi chat.</p>
+      </div>
+    );
+  }
+
+  return (
+    <iframe
+      className="document-iframe"
+      src={`${blobUrl}#toolbar=0&navpanes=0`}
+      title={doc.filename}
+      style={{
+        transform: `scale(${zoom})`,
+        width: `${100 / zoom}%`,
+        height: `${100 / zoom}%`,
+      }}
+    />
+  );
+}
+
+const navItems = [
+  ["chat", "▦", "Dashboard"],
+  ["history", "↺", "History"],
+  ["settings", "⚙", "Settings"],
+];
+
+function getExtension(filename = "") {
+  const clean = filename.split("?")[0];
+  const ext = clean.includes(".") ? clean.split(".").pop().toLowerCase() : "pdf";
+  return ext || "pdf";
+}
+
+function getCategory(filename = "") {
+  const name = filename.toLowerCase();
+  if (name.includes("market") || name.includes("business") || name.includes("report")) return "Economics";
+  if (name.includes("history") || name.includes("roman")) return "History";
+  if (name.includes("data") || name.includes("csv")) return "Data Science";
+  if (name.includes("physics") || name.includes("quantum")) return "Physics";
+  if (name.includes("literature") || name.includes("note")) return "Literature";
+  if (name.includes("machine") || name.includes("slide") || name.includes("neural")) return "Machine Learning";
+  return "Knowledge";
+}
+
+function displayTitle(filename = "") {
+  const withoutExt = filename.replace(/\.[^/.]+$/, "").replaceAll("_", " ");
+  return withoutExt || "Untitled document";
+}
+
+function formatBytes(value) {
+  if (!value) return "Verified";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function normalizeDoc(doc) {
+  const filename = doc.filename || doc.name || `Document ${doc.id}`;
+  const ext = getExtension(filename);
+  return {
+    ...doc,
+    filename,
+    title: displayTitle(filename),
+    category: getCategory(filename),
+    ext,
+    added: formatDate(doc.created_at),
+    detail: doc.description || filename,
+    metric: doc.status === "done" ? formatBytes(doc.file_size || doc.size) : doc.status || "pending",
+  };
+}
+
+const sessionKinds = ["TOPIC ANALYSIS", "SYNTHESIS", "DRAFTING"];
+
+function getSessionKind(index) {
+  return sessionKinds[index % sessionKinds.length];
+}
+
+function getSessionTimeLabel(session) {
+  const rawDate = session.updated_at || session.created_at;
+  if (!rawDate) return "Last active";
+
+  const date = new Date(rawDate);
+  const diffMs = Date.now() - date.getTime();
+  const hourMs = 60 * 60 * 1000;
+  const dayMs = 24 * hourMs;
+
+  if (Number.isNaN(date.getTime())) return "Last active";
+  if (diffMs < hourMs) return "Last active now";
+  if (diffMs < dayMs) return `Last active ${Math.max(1, Math.round(diffMs / hourMs))}h ago`;
+  if (diffMs < 2 * dayMs) return "Yesterday";
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function getSessionTitle(session) {
+  return session.title || `Session #${session.id}`;
+}
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token") || "");
-  const [isRegistering, setIsRegistering] = useState(false);
+  const [theme, setTheme] = useState(localStorage.getItem("theme") || "dark");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [view, setView] = useState("chat");
+  const [documents, setDocuments] = useState([]);
+  const [selectedDocIds, setSelectedDocIds] = useState([]);
+  const [activeDocId, setActiveDocId] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [currentSessionId, setCurrentSessionId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [botStatus, setBotStatus] = useState(""); // ✅ Biến lưu trạng thái bot thinking
-  const [thinkStartTime, setThinkStartTime] = useState(null); // Thời điểm bắt đầu gửi
-  const [thinkTime, setThinkTime] = useState(0); // Bộ đếm thời gian
-
-  const bottomRef = useRef(null);
+  const [botStatus, setBotStatus] = useState("");
+  const [thinkStartTime, setThinkStartTime] = useState(null);
+  const [thinkTime, setThinkTime] = useState(0);
   const [pdfModal, setPdfModal] = useState(null);
-  const [documents, setDocuments] = useState([]);
-  const [selectedDocIds, setSelectedDocIds] = useState([]);
-  const [showSidebar, setShowSidebar] = useState(true); // ✅ Mở mặc định để tiện xem lịch sử
+  const [query, setQuery] = useState("");
+  const [subjectFilter, setSubjectFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [sortMode, setSortMode] = useState("recent");
+  const [syncScroll, setSyncScroll] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [chatWidth, setChatWidth] = useState(34);
+  const bottomRef = useRef(null);
 
-  const [sessions, setSessions] = useState([]);
-  const [currentSessionId, setCurrentSessionId] = useState(null);
+  const isLight = theme === "light";
 
-  // Effect chạy đồng hồ đếm giờ
+  const normalizedDocs = useMemo(() => documents.map(normalizeDoc), [documents]);
+  const selectedDocuments = useMemo(
+    () => normalizedDocs.filter((doc) => selectedDocIds.includes(doc.id)),
+    [normalizedDocs, selectedDocIds],
+  );
+  const activeDoc = useMemo(() => {
+    if (!normalizedDocs.length) return null;
+    return normalizedDocs.find((doc) => doc.id === activeDocId) || selectedDocuments[0] || normalizedDocs[0];
+  }, [activeDocId, normalizedDocs, selectedDocuments]);
+
+  const subjects = useMemo(
+    () => Array.from(new Set(normalizedDocs.map((doc) => doc.category))).sort(),
+    [normalizedDocs],
+  );
+  const fileTypes = useMemo(
+    () => Array.from(new Set(normalizedDocs.map((doc) => doc.ext))).sort(),
+    [normalizedDocs],
+  );
+
+  const visibleDocs = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    const docs = normalizedDocs.filter((doc) => {
+      const matchesSearch =
+        !search ||
+        doc.filename.toLowerCase().includes(search) ||
+        doc.title.toLowerCase().includes(search) ||
+        doc.category.toLowerCase().includes(search);
+      const matchesSubject = subjectFilter === "all" || doc.category === subjectFilter;
+      const matchesType = typeFilter === "all" || doc.ext === typeFilter;
+      return matchesSearch && matchesSubject && matchesType;
+    });
+
+    return docs.sort((a, b) => {
+      if (sortMode === "name") return a.title.localeCompare(b.title);
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    });
+  }, [normalizedDocs, query, subjectFilter, sortMode, typeFilter]);
+
+  useEffect(() => {
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
   useEffect(() => {
     let interval;
     if (loading && thinkStartTime) {
@@ -202,137 +362,58 @@ export default function App() {
   }, [loading, thinkStartTime]);
 
   useEffect(() => {
-    if (token) {
-      fetchSessionsAndDocs();
-    }
+    if (token) fetchSessionsAndDocs();
   }, [token]);
-
-  async function fetchSessionsAndDocs() {
-    try {
-      // Tải documents
-      const resDocs = await fetch(`${API}/documents`, { headers: { Authorization: `Bearer ${token}` } });
-      if (resDocs.ok) {
-        setDocuments((await resDocs.json()).filter(d => d.status === "done"));
-      }
-
-      // Tải sessions
-      const resSessions = await fetch(`${API}/chat/sessions`, { headers: { Authorization: `Bearer ${token}` } });
-      if (resSessions.ok) {
-        const data = await resSessions.json();
-        setSessions(data);
-        if (data.length > 0 && !currentSessionId) {
-          switchSession(data[0]);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  function switchSession(session) {
-    setCurrentSessionId(session.id);
-    setSelectedDocIds(session.selected_docs || []);
-  }
-
-  function startNewSession() {
-    setCurrentSessionId(null);
-    setMessages([]);
-    // Giữ nguyên selectedDocIds hoặc reset tùy ý, ở đây cứ giữ nguyên
-  }
-
-  async function renameSession(e, session) {
-    e.stopPropagation();
-    const newTitle = prompt("Nhập tên mới cho cuộc trò chuyện:", session.title);
-    if (!newTitle || newTitle === session.title) return;
-
-    try {
-      const res = await fetch(`${API}/chat/sessions/${session.id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ title: newTitle, selected_docs: session.selected_docs }),
-      });
-      if (res.ok) {
-        setSessions(prev => prev.map(s => s.id === session.id ? { ...s, title: newTitle } : s));
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  async function deleteSession(e, sessionId) {
-    e.stopPropagation();
-    if (!window.confirm("Bạn có chắc chắn muốn xóa cuộc trò chuyện này?")) return;
-
-    try {
-      const res = await fetch(`${API}/chat/sessions/${sessionId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        setSessions(prev => prev.filter(s => s.id !== sessionId));
-        if (currentSessionId === sessionId) {
-          startNewSession();
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  useEffect(() => {
-    if (token && currentSessionId) {
-      fetchHistory(currentSessionId);
-    }
-  }, [currentSessionId, token]);
-
-  async function fetchDocuments() {
-    try {
-      const res = await fetch(`${API}/documents`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setDocuments(data.filter(d => d.status === "done"));
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, botStatus]);
+
+  useEffect(() => {
+    if (!activeDocId && normalizedDocs.length) {
+      setActiveDocId(normalizedDocs[0].id);
+    }
+  }, [activeDocId, normalizedDocs]);
+
+  async function fetchSessionsAndDocs() {
+    try {
+      const [resDocs, resSessions] = await Promise.all([
+        fetch(`${API}/documents`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API}/chat/sessions`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+
+      if (resDocs.status === 401 || resSessions.status === 401) {
+        handleLogout();
+        return;
+      }
+
+      if (resDocs.ok) {
+        const data = await resDocs.json();
+        setDocuments(data);
+        setActiveDocId((prev) => prev || data[0]?.id || null);
+      }
+
+      if (resSessions.ok) {
+        setSessions(await resSessions.json());
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  }
 
   async function fetchHistory(sessionId) {
-    const maxRetries = 5;
-    const retryDelay = 2000;
-
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const res = await fetch(`${API}/chat/history?session_id=${sessionId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.status === 401) {
-          localStorage.removeItem("token");
-          setToken("");
-          setMessages([]);
-          return;
-        }
-        if (res.ok) {
-          const data = await res.json();
-          setMessages(data);
-          return; // ✅ Thành công thì dừng
-        }
-      } catch (err) {
-        console.log(`Retry ${i + 1}/${maxRetries} fetch history...`);
+    try {
+      const res = await fetch(`${API}/chat/history?session_id=${sessionId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        handleLogout();
+        return;
       }
-      // Chờ 2s rồi thử lại
-      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      if (res.ok) setMessages(await res.json());
+    } catch (err) {
+      console.error(err);
     }
-    console.error("Không thể load lịch sử sau nhiều lần thử");
   }
 
   async function handleAuth(e) {
@@ -351,17 +432,66 @@ export default function App() {
       const data = await res.json();
       if (res.ok) {
         if (isRegistering) {
-          alert("Đăng ký thành công! Hãy đăng nhập.");
+          alert("Đăng ký thành công. Hãy đăng nhập.");
           setIsRegistering(false);
         } else {
           localStorage.setItem("token", data.access_token);
           setToken(data.access_token);
         }
       } else {
-        alert(data.detail || "Đăng nhập thất bại!");
+        alert(data.detail || "Đăng nhập thất bại.");
+      }
+    } catch {
+      alert("Không thể kết nối server.");
+    }
+  }
+
+  function handleLogout() {
+    localStorage.removeItem("token");
+    setToken("");
+    setMessages([]);
+    setDocuments([]);
+    setSessions([]);
+    setCurrentSessionId(null);
+    setSelectedDocIds([]);
+  }
+
+  function startNewSession() {
+    setCurrentSessionId(null);
+    setMessages([]);
+    setView("chat");
+  }
+
+  function toggleDoc(docId) {
+    setSelectedDocIds((prev) =>
+      prev.includes(docId) ? prev.filter((id) => id !== docId) : [...prev, docId],
+    );
+    setActiveDocId(docId);
+  }
+
+  function openSession(session) {
+    setCurrentSessionId(session.id);
+    setSelectedDocIds(session.selected_docs || []);
+    setActiveDocId((session.selected_docs || [])[0] || activeDocId);
+    setView("chat");
+    fetchHistory(session.id);
+  }
+
+  async function deleteSession(e, sessionId) {
+    e.stopPropagation();
+    if (!window.confirm("Xóa cuộc trò chuyện này?")) return;
+
+    try {
+      const res = await fetch(`${API}/chat/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+        if (currentSessionId === sessionId) startNewSession();
       }
     } catch (err) {
-      alert("Không thể kết nối server. Kiểm tra lại mạng!");
+      console.error(err);
     }
   }
 
@@ -370,22 +500,20 @@ export default function App() {
     if (!input.trim() || loading) return;
 
     const question = input.trim();
-    const time = formatTime();
-
-    setMessages((prev) => [...prev, { role: "user", content: question, time }]);
+    setMessages((prev) => [...prev, { role: "user", content: question, time: formatTime() }]);
     setInput("");
     setLoading(true);
-    setThinkStartTime(Date.now()); // Bắt đầu đếm ngược
-    setBotStatus("Khởi động AI");
+    setThinkStartTime(Date.now());
+    setBotStatus("Analyzing context");
+    setView("chat");
 
-    // Thêm tin nhắn bot ảo để chuẩn bị stream
-    let currentBotMsg = {
+    const assistantMessage = {
       role: "assistant",
       content: "",
       sources: "[]",
       time: formatTime(),
     };
-    setMessages((prev) => [...prev, currentBotMsg]);
+    setMessages((prev) => [...prev, assistantMessage]);
 
     try {
       const res = await fetch(`${API}/chat/query`, {
@@ -394,78 +522,76 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ question, selected_doc_ids: selectedDocIds, session_id: currentSessionId }),
+        body: JSON.stringify({
+          question,
+          selected_doc_ids: selectedDocIds,
+          session_id: currentSessionId,
+        }),
       });
+
       if (res.status === 401) {
-        localStorage.removeItem("token");
-        setToken("");
-        setMessages([]);
+        handleLogout();
         return;
       }
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
+
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let doneReading = false;
-      let aiStartedTyping = false;
       let buffer = "";
+      let nextAssistant = { ...assistantMessage };
+      let aiStartedTyping = false;
 
-      while (!doneReading) {
+      while (true) {
         const { value, done } = await reader.read();
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n');
-        buffer = parts.pop(); // Giữ lại đoạn JSON chưa hoàn chỉnh ở cuối
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
 
-        for (const line of parts) {
+        for (const line of lines) {
           if (!line.trim()) continue;
-          try {
-            const parsed = JSON.parse(line);
+          const parsed = JSON.parse(line);
 
-            if (parsed.type === "session_created") {
-              // Server đã tạo phiên mới tự động
-              const newSessionData = parsed.data;
-              setCurrentSessionId(newSessionData.id);
-              // Cập nhật mảng sessions
-              setSessions(prev => [{ id: newSessionData.id, title: newSessionData.title, selected_docs: selectedDocIds }, ...prev]);
+          if (parsed.type === "session_created") {
+            const session = parsed.data;
+            setCurrentSessionId(session.id);
+            setSessions((prev) => [
+              { id: session.id, title: session.title, selected_docs: selectedDocIds },
+              ...prev,
+            ]);
+          } else if (parsed.type === "status") {
+            setBotStatus(parsed.data);
+          } else if (parsed.type === "sources") {
+            nextAssistant = { ...nextAssistant, sources: JSON.stringify(parsed.data) };
+          } else if (parsed.type === "chunk") {
+            if (!aiStartedTyping) {
+              aiStartedTyping = true;
+              setThinkStartTime(null);
+              setBotStatus("Writing answer");
             }
-            else if (parsed.type === "status") {
-              setBotStatus(parsed.data);
-            }
-            else if (parsed.type === "sources") {
-              currentBotMsg.sources = JSON.stringify(parsed.data);
-            }
-            else if (parsed.type === "chunk") {
-              if (!aiStartedTyping) {
-                aiStartedTyping = true;
-                setThinkStartTime(null); // Tắt đồng hồ đếm khi bắt đầu gõ
-                setBotStatus("Đang trả lời ... ");
-              }
-              currentBotMsg.content += parsed.data;
-            }
-            else if (parsed.type === "error") {
-              currentBotMsg.content += `\n\n⚠️ Lỗi: ${parsed.data}`;
-            }
-
-            // Cập nhật lại UI liên tục
-            setMessages((prev) => {
-              const newMsgs = [...prev];
-              newMsgs[newMsgs.length - 1] = { ...currentBotMsg };
-              return newMsgs;
-            });
-          } catch (e) {
-            console.error("Lỗi parse dòng NDJSON:", line, e);
+            nextAssistant = { ...nextAssistant, content: nextAssistant.content + parsed.data };
+          } else if (parsed.type === "error") {
+            nextAssistant = { ...nextAssistant, content: `${nextAssistant.content}\n\nLỗi: ${parsed.data}` };
           }
+
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = nextAssistant;
+            return next;
+          });
         }
       }
     } catch (err) {
+      console.error(err);
       setMessages((prev) => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1].content = "⚠️ Không thể kết nối server hoặc có lỗi xảy ra.";
-        return newMsgs;
+        const next = [...prev];
+        next[next.length - 1] = {
+          ...next[next.length - 1],
+          content: "Không thể kết nối server hoặc có lỗi xảy ra.",
+        };
+        return next;
       });
     } finally {
       setLoading(false);
@@ -473,13 +599,16 @@ export default function App() {
       setThinkStartTime(null);
     }
   }
+
   async function handleSourceClick(src) {
     try {
-      const res = await fetch(
-        `/api/documents/by-filename/${encodeURIComponent(src.filename)}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!res.ok) return alert("Không tìm thấy tài liệu!");
+      const res = await fetch(`/api/documents/by-filename/${encodeURIComponent(src.filename)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        alert("Không tìm thấy tài liệu.");
+        return;
+      }
       const doc = await res.json();
       setPdfModal({
         url: `/api/documents/${doc.id}/file`,
@@ -487,645 +616,500 @@ export default function App() {
         filename: src.filename,
       });
     } catch {
-      alert("Không thể mở tài liệu!");
+      alert("Không thể mở tài liệu.");
     }
   }
 
-  // ── Login / Register ──────────────────────────────────────
+  async function openDocumentFile(download = false) {
+    if (!activeDoc) return;
+    try {
+      const res = await fetch(`/api/documents/${activeDoc.id}/file`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Cannot open file");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (download) {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = activeDoc.filename;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        setPdfModal({ url: `/api/documents/${activeDoc.id}/file`, filename: activeDoc.filename, page: 1 });
+      }
+    } catch {
+      alert("Không thể mở file tài liệu.");
+    }
+  }
+
+  function startResize(e) {
+    e.preventDefault();
+    const container = e.currentTarget.parentElement;
+    if (!container) return;
+
+    const handleMove = (event) => {
+      const rect = container.getBoundingClientRect();
+      const nextWidth = ((rect.right - event.clientX) / rect.width) * 100;
+      setChatWidth(Math.min(60, Math.max(28, nextWidth)));
+    };
+    const stopResize = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", stopResize);
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", stopResize);
+  }
+
   if (!token) {
     return (
-      <div style={styles.authContainer}>
-        <div style={styles.authCard}>
-          {/* Logo */}
-          <div style={styles.authLogoWrap}>
-            <div style={styles.authLogo}>🎓</div>
+      <main className="auth-screen">
+        <form className="auth-panel" onSubmit={handleAuth}>
+          <div className="auth-brand">
+            <span>UET Assistant</span>
+            <small>RESEARCHER PRO</small>
           </div>
-          <h2 style={styles.authTitle}>
-            {isRegistering ? "Tạo tài khoản" : "UET Assistant"}
-          </h2>
-          <p style={styles.authSubtitle}>
+          <h1>{isRegistering ? "Tạo tài khoản" : "Đăng nhập"}</h1>
+          <p>
             {isRegistering
-              ? "Điền thông tin bên dưới để đăng ký"
-              : "Trợ lý học vụ thông minh của UET"}
+              ? "Tạo tài khoản để sử dụng trợ lý nghiên cứu."
+              : "Truy cập thư viện tài liệu và trò chuyện với AI theo ngữ cảnh đã chọn."}
           </p>
-          <form onSubmit={handleAuth} style={styles.form}>
-            <div style={styles.inputWrap}>
-              <span style={styles.inputIcon}>👤</span>
-              <input
-                style={styles.input}
-                placeholder="Tên đăng nhập"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-              />
-            </div>
-            <div style={styles.inputWrap}>
-              <span style={styles.inputIcon}>🔒</span>
-              <input
-                style={styles.input}
-                type="password"
-                placeholder="Mật khẩu"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            <button style={styles.primaryBtn} type="submit">
-              {isRegistering ? "Đăng ký" : "Đăng nhập"}
-            </button>
-          </form>
-          <p onClick={() => setIsRegistering(!isRegistering)} style={styles.toggleAuth}>
+          <label>
+            Tên đăng nhập
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+          </label>
+          <label>
+            Mật khẩu
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={isRegistering ? "new-password" : "current-password"}
+            />
+          </label>
+          <button className="primary-action" type="submit">
+            {isRegistering ? "Đăng ký" : "Đăng nhập"}
+          </button>
+          <button className="link-action" type="button" onClick={() => setIsRegistering((prev) => !prev)}>
             {isRegistering ? "Đã có tài khoản? Đăng nhập" : "Chưa có tài khoản? Đăng ký"}
-          </p>
-        </div>
-      </div>
+          </button>
+        </form>
+      </main>
     );
   }
 
-  // ── Chat UI ───────────────────────────────────────────────
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "#f1f5f9" }}>
-      {/* ── Sidebar: Chat Sessions & Nguồn tri thức ── */}
-      <aside style={{
-        width: showSidebar ? 280 : 0,
-        background: "#0f172a", // Dark sidebar for contrast
-        color: "#f8fafc",
-        transition: "all 0.3s ease",
-        overflow: "hidden",
-        display: "flex",
-        flexDirection: "column",
-        flexShrink: 0
-      }}>
-        {/* Nút Tạo Phiên Mới */}
-        <div style={{ padding: 16 }}>
-          <button
-            onClick={startNewSession}
-            style={{ width: "100%", background: "#1e3a8a", color: "#fff", border: "1px solid #3b82f6", padding: "10px", borderRadius: 8, cursor: "pointer", fontWeight: "bold", display: "flex", gap: 8, alignItems: "center", justifyContent: "center" }}
-          >
-            <span>+</span> Cuộc trò chuyện mới
-          </button>
+    <div className={`rag-app theme-${theme}`}>
+      <aside className="rag-sidebar">
+        <div className="rag-brand">
+          <strong>UET Assistant</strong>
+          <span>RESEARCHER PRO</span>
         </div>
-
-        {/* Danh sách Sessions */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0 10px" }}>
-          <div style={{ fontSize: 11, fontWeight: "bold", color: "#64748b", textTransform: "uppercase", marginBottom: 8, paddingLeft: 6 }}>
-            Lịch sử Chat
-          </div>
-          {sessions.map(s => (
-            <div
-              key={s.id}
-              onClick={() => switchSession(s)}
-              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", marginBottom: 4, borderRadius: 8, cursor: "pointer", fontSize: 13, background: currentSessionId === s.id ? "#1e293b" : "transparent", color: currentSessionId === s.id ? "#fff" : "#cbd5e1" }}
-            >
-              <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: 1 }}>
-                💬 {s.title}
-              </div>
-              <div style={{ display: "flex", gap: 8, opacity: currentSessionId === s.id ? 1 : 0.4, transition: "opacity 0.2s" }}>
-                <span onClick={(e) => renameSession(e, s)} title="Đổi tên" style={{ fontSize: 12 }}>✏️</span>
-                <span onClick={(e) => deleteSession(e, s.id)} title="Xóa" style={{ fontSize: 12 }}>🗑️</span>
-              </div>
-            </div>
-          ))}
-          {sessions.length === 0 && <div style={{ fontSize: 12, color: "#475569", paddingLeft: 6 }}>Chưa có cuộc trò chuyện nào</div>}
-        </div>
-
-        {/* Phần Nguồn Tri Thức */}
-        <div style={{ padding: "16px", borderTop: "1px solid #1e293b", background: "#0f172a", flex: 1, display: "flex", flexDirection: "column", maxHeight: "40%" }}>
-          <div style={{ fontSize: 11, fontWeight: "bold", color: "#64748b", textTransform: "uppercase", marginBottom: 8 }}>
-            📚 Nguồn Tri Thức (Cho phiên này)
-          </div>
-          <div style={{ overflowY: "auto", flex: 1, paddingRight: 4 }}>
-            {documents.map(doc => (
-              <label key={doc.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", cursor: "pointer", fontSize: 12, color: selectedDocIds.includes(doc.id) ? "#38bdf8" : "#94a3b8" }}>
-                <input
-                  type="checkbox"
-                  checked={selectedDocIds.includes(doc.id)}
-                  onChange={(e) => {
-                    const newIds = e.target.checked
-                      ? [...selectedDocIds, doc.id]
-                      : selectedDocIds.filter(id => id !== doc.id);
-                    setSelectedDocIds(newIds);
-                    // Có thể gọi API để lưu vào DB ngay nếu muốn, nhưng để cho đơn giản ta lưu khi gửi câu hỏi là đủ
+        <button className="new-chat-btn" type="button" onClick={startNewSession}>
+          + New Chat
+        </button>
+        <section className="sidebar-documents" aria-label="Documents">
+          <div className="sidebar-documents__title">Documents</div>
+          <div className="sidebar-documents__list">
+            {normalizedDocs.map((doc) => {
+              const selected = selectedDocIds.includes(doc.id);
+              return (
+                <div
+                  key={doc.id}
+                  className={`sidebar-doc ${activeDoc?.id === doc.id ? "is-active" : ""}`}
+                  onClick={() => setActiveDocId(doc.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") setActiveDocId(doc.id);
                   }}
-                />
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={doc.filename}>{doc.filename}</span>
-              </label>
-            ))}
+                  role="button"
+                  tabIndex={0}
+                  title={doc.filename}
+                >
+                  <span className={`file-mark file-mark--${doc.ext}`}>{doc.ext.slice(0, 3).toUpperCase()}</span>
+                  <span className="sidebar-doc__name">{doc.filename}</span>
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleDoc(doc.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Chọn ${doc.filename}`}
+                  />
+                </div>
+              );
+            })}
+            {!normalizedDocs.length && (
+              <div className="sidebar-documents__empty">Chưa có tài liệu.</div>
+            )}
           </div>
-        </div>
+        </section>
+        <nav className="rag-nav">
+          {navItems.map(([key, icon, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`rag-nav__item ${view === key ? "is-active" : ""}`}
+              onClick={() => setView(key)}
+            >
+              <span>{icon}</span>
+              {label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className={`rag-nav__item ${view === "help" ? "is-active" : ""}`}
+            onClick={() => setView("help")}
+          >
+            <span>?</span>
+            Help
+          </button>
+          <button type="button" className="rag-nav__item rag-nav__item--action" onClick={handleLogout}>
+            <span>↪</span>
+            Logout
+          </button>
+        </nav>
       </aside>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-        {/* Header */}
-        <header style={styles.header}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <button
-              onClick={() => setShowSidebar(!showSidebar)}
-              style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", cursor: "pointer", fontSize: 16, width: 34, height: 34, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}
-              title="Mở/Đóng danh sách tài liệu"
-            >
-              ☰
-            </button>
-            <div style={styles.headerLogo}>🎓</div>
-            <div>
-              <div style={styles.headerTitle}>UET Assistant</div>
-              <div style={styles.headerSubtitle}>Trợ lý học vụ thông minh</div>
+      {view === "library" && (
+        <main className="library-screen">
+          <header className="topbar">
+            <label className="search-box">
+              <span>⌕</span>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search knowledge base..."
+              />
+            </label>
+            <div className="topbar-icons">
+              <button className="icon-btn" type="button" onClick={fetchSessionsAndDocs} aria-label="Làm mới">
+                ⚙
+              </button>
+              <button className="icon-btn" type="button" onClick={() => setView("settings")} aria-label="Tài khoản">
+                ◎
+              </button>
             </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {/* ✅ Avatar user */}
-            <div style={styles.userAvatar}>
-              {username ? username[0].toUpperCase() : "U"}
-            </div>
-            <button
-              style={styles.logoutBtn}
-              onClick={() => {
-                localStorage.removeItem("token");
-                setToken("");
-                setMessages([]);
-              }}
-            >
-              Đăng xuất
-            </button>
-          </div>
-        </header>
+          </header>
 
-        {/* Chat Area */}
-        <main style={styles.chatArea}>
-          {/* ✅ Date divider */}
-          {messages.length > 0 && (
-            <div style={styles.dateDivider}>
-              <span style={styles.dateDividerText}>{formatDate()}</span>
+          <section className="library-content">
+            <div className="library-heading">
+              <div>
+                <h1>Document Library</h1>
+                <p>Select documents to serve as context for your next AI session.</p>
+              </div>
+              <div className="filters">
+                <label>
+                  Subject
+                  <select value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
+                    <option value="all">All</option>
+                    {subjects.map((subject) => (
+                      <option key={subject} value={subject}>
+                        {subject}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  File Type
+                  <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                    <option value="all">All</option>
+                    {fileTypes.map((type) => (
+                      <option key={type} value={type}>
+                        {type.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Date Added
+                  <select value={sortMode} onChange={(e) => setSortMode(e.target.value)}>
+                    <option value="recent">Newest</option>
+                    <option value="name">Name</option>
+                  </select>
+                </label>
+              </div>
             </div>
-          )}
 
-          {/* Welcome message khi chưa có tin nhắn */}
-          {messages.length === 0 && (
-            <div style={styles.welcomeWrap}>
-              <div style={styles.welcomeIcon}>🎓</div>
-              <h3 style={styles.welcomeTitle}>Xin chào! Tôi là UET Assistant</h3>
-              <p style={styles.welcomeSubtitle}>
-                Hãy hỏi tôi về quy chế học vụ, điều kiện tốt nghiệp, học phí và các thông tin liên quan.
-              </p>
-              <div style={styles.suggestionWrap}>
-                {[
-                  "Điều kiện xét tốt nghiệp là gì?",
-                  "Quy định về nghỉ học như thế nào?",
-                  "Cách tính điểm GPA?",
-                ].map((s, i) => (
-                  <button
-                    key={i}
-                    style={styles.suggestionBtn}
-                    onClick={() => setInput(s)}
+            <div className="doc-grid">
+              {visibleDocs.map((doc) => {
+                const selected = selectedDocIds.includes(doc.id);
+                return (
+                  <article
+                    key={doc.id}
+                    className={`doc-card ${selected ? "is-selected" : ""}`}
+                    onClick={() => setActiveDocId(doc.id)}
                   >
-                    {s}
+                    <div className="doc-card__top">
+                      <span className={`file-mark file-mark--${doc.ext}`}>{doc.ext.slice(0, 3).toUpperCase()}</span>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleDoc(doc.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Chọn ${doc.filename}`}
+                      />
+                    </div>
+                    <span className="subject-tag">{doc.category}</span>
+                    <h2>{doc.title}</h2>
+                    <p>{doc.detail}</p>
+                    <footer>
+                      <span>{doc.added}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveDocId(doc.id);
+                          setPdfModal({ url: `/api/documents/${doc.id}/file`, filename: doc.filename, page: 1 });
+                        }}
+                      >
+                        {doc.metric}
+                      </button>
+                    </footer>
+                  </article>
+                );
+              })}
+              {!visibleDocs.length && (
+                <div className="empty-state">
+                  <h2>Không có tài liệu phù hợp</h2>
+                  <p>Thử đổi bộ lọc hoặc kiểm tra lại dữ liệu đã ingest.</p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <button
+            className={`floating-context ${selectedDocIds.length ? "is-visible" : ""}`}
+            type="button"
+            onClick={() => setView("chat")}
+          >
+            Start with {selectedDocIds.length} source{selectedDocIds.length > 1 ? "s" : ""}
+          </button>
+        </main>
+      )}
+
+      {view === "chat" && (
+        <main className="chat-screen">
+          <header className="chat-topbar">
+            <div className="chat-topbar__left">
+              <div className="active-sources">
+                <span>Active Sources:</span>
+                {selectedDocuments.map((doc) => (
+                  <button
+                    key={doc.id}
+                    className={activeDoc?.id === doc.id ? "source-chip source-chip--active" : "source-chip"}
+                    type="button"
+                    onClick={() => {
+                      setActiveDocId(doc.id);
+                      setView("chat");
+                    }}
+                  >
+                    {doc.filename}
                   </button>
                 ))}
               </div>
             </div>
-          )}
-
-          {messages.map((msg, idx) => {
-            const safeContent = msg.content ? String(msg.content) : "";
-            const isUser = msg.role === "user";
-            const isAssistant = msg.role === "assistant" || msg.role === "bot";
-
-            // Kiểm tra xem bot có nói là "không biết" hay không
-            let shouldShowSources = true;
-            if (isAssistant && msg.sources) {
-              const contentLower = safeContent.toLowerCase();
-              if (
-                contentLower.includes("chưa có thông tin về vấn đề này trong tài liệu hiện tại") ||
-                contentLower.includes("tôi chưa có thông tin về vấn đề này") ||
-                contentLower.includes("không tìm thấy thông tin")
-              ) {
-                // Nếu câu trả lời quá ngắn (nghĩa là nó chỉ báo không biết), thì ẩn nguồn đi
-                if (safeContent.length < 300) {
-                  shouldShowSources = false;
-                }
-              }
-            }
-
-            return (
-              <div
-                key={idx}
-                style={isUser ? styles.msgWrapperUser : styles.msgWrapperBot}
+            <div className="topbar-icons">
+              <button
+                className="icon-btn"
+                type="button"
+                onClick={() => setTheme(isLight ? "dark" : "light")}
+                aria-label={isLight ? "Chuyển sang dark mode" : "Chuyển sang light mode"}
+                title={isLight ? "Dark mode" : "Light mode"}
               >
-                <div style={isUser ? styles.avatarUser : styles.avatarBot}>
-                  {isUser ? (username ? username[0].toUpperCase() : "U") : "🤖"}
-                </div>
-                <div style={{ maxWidth: "100%", minWidth: 0 }}>
-                  {/* Hiển thị Bubble Chat */}
-                  {safeContent || isUser ? (
-                    <div style={isUser ? styles.userBubble : styles.botBubble}>
-                      {isUser ? safeContent : <SafeMarkdown content={safeContent} />}
-                    </div>
-                  ) : (
-                    // Khi safeContent rỗng và đang loading thì hiển thị trạng thái đang nghĩ (thay vì bubble trống)
-                    loading && idx === messages.length - 1 && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: "rgba(30, 58, 138, 0.05)", borderRadius: "4px 16px 16px 16px", width: "fit-content", border: "0.5px solid #e2e8f0" }}>
-                        <div style={styles.spinner} />
-                        <span style={{ color: "#3b82f6", fontSize: 13, fontWeight: 500, fontStyle: "italic", display: "flex", alignItems: "center" }}>
-                          {botStatus}
-                          <AnimatedDots />
-                          {thinkStartTime && (
-                            <span style={{ color: "#94a3b8", marginLeft: 8, fontSize: 11, fontWeight: "normal" }}>
-                              ({thinkTime}s)
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    )
-                  )}
+                {isLight ? "☾" : "☼"}
+              </button>
+              <button className="icon-btn" type="button" onClick={() => setView("settings")} aria-label="Cài đặt">
+                ⚙
+              </button>
+            </div>
+          </header>
 
-                  {/* Sources */}
-                  {isAssistant && msg.sources && shouldShowSources && safeContent !== "" && (
-                    <div style={styles.sourceContainer}>
-                      {(() => {
-                        let parsed = [];
-                        try {
-                          parsed =
-                            typeof msg.sources === "string"
-                              ? JSON.parse(msg.sources)
-                              : msg.sources;
-                        } catch {
-                          return null;
-                        }
-                        if (!Array.isArray(parsed) || parsed.length === 0) return null;
-                        return parsed.map((src, sIdx) => (
-                          <span
-                            key={sIdx}
-                            style={{ ...styles.sourceTag, cursor: "pointer" }}
-                            onClick={() => handleSourceClick(src)}
-                            title="Click để xem tài liệu gốc"
-                          >
-                            📄 {src?.filename} · Tr.{src?.page}
-                          </span>
-                        ));
-                      })()}
-                    </div>
-                  )}
-
-                  {/* ✅ Timestamp */}
-                  {msg.time && (
-                    <div style={{
-                      fontSize: 11,
-                      color: "#94a3b8",
-                      marginTop: 3,
-                      textAlign: isUser ? "right" : "left",
-                    }}>
-                      {msg.time}
-                    </div>
-                  )}
+          <div
+            className="split-layout"
+            style={{ gridTemplateColumns: `minmax(360px, 1fr) 6px minmax(340px, ${chatWidth}%)` }}
+          >
+            <section className="document-viewer">
+              <header>
+                <div>
+                  <span>▤</span>
+                  <strong>{activeDoc?.filename || "No document selected"}</strong>
                 </div>
+                <div>
+                  <button type="button" className="mini-btn" onClick={() => setZoom((prev) => Math.max(0.8, prev - 0.1))}>
+                    −
+                  </button>
+                  <button type="button" className="mini-btn" onClick={() => setZoom((prev) => Math.min(1.3, prev + 0.1))}>
+                    +
+                  </button>
+                  <button type="button" className="mini-btn" onClick={() => openDocumentFile(true)}>
+                    ⇩
+                  </button>
+                </div>
+              </header>
+              <div className="pdf-canvas">
+                <InlineDocumentPreview key={activeDoc?.id || "empty"} doc={activeDoc} token={token} zoom={zoom} />
               </div>
-            );
-          })}
+            </section>
 
-          <div ref={bottomRef} />
+            <div className="resize-divider" role="separator" aria-label="Resize chat panel" onPointerDown={startResize}>
+              <span />
+            </div>
+
+            <section className="chat-panel">
+              <header className="chat-panel__header">
+                <strong>▣ UET Assistant</strong>
+                <button type="button" className={`sync-btn ${syncScroll ? "is-on" : ""}`} onClick={() => setSyncScroll((prev) => !prev)}>
+                  ⇄ SYNC
+                </button>
+              </header>
+              <div className="chat-messages">
+                {!messages.length && (
+                  <div className="assistant-card">
+                    <span className="assistant-label">✣ Assistant Summary</span>
+                    <div className="assistant-bubble">
+                      <p>
+                        Based on the selected source, the current context is{" "}
+                        <strong>{activeDoc?.title || "your document"}</strong>.
+                      </p>
+                      <p>Ask a question and the assistant will answer flexibly using retrieved context when available.</p>
+                    </div>
+                  </div>
+                )}
+
+                {messages.map((msg, idx) => {
+                  const isUser = msg.role === "user";
+                  const safeContent = msg.content || "";
+                  return (
+                    <div key={`${msg.role}-${idx}`} className={isUser ? "message-row message-row--user" : "message-row"}>
+                      <span className="message-label">{isUser ? "You ◎" : "✣ Assistant"}</span>
+                      <div className={isUser ? "message-bubble message-bubble--user" : "message-bubble"}>
+                        {isUser ? safeContent : <SafeMarkdown content={safeContent} />}
+                      </div>
+                      {msg.time && <small className="message-time">{msg.time}</small>}
+                    </div>
+                  );
+                })}
+
+                {loading && (
+                  <div className="status-line">
+                    <span>☊</span>
+                    <em>
+                      {botStatus || "Analyzing context"}
+                      <AnimatedDots />
+                      {thinkStartTime && <small> ({thinkTime}s)</small>}
+                    </em>
+                  </div>
+                )}
+                <div ref={bottomRef} />
+              </div>
+              <form className="chat-input" onSubmit={sendMessage}>
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Ask a question about the document..."
+                  disabled={loading}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) sendMessage(e);
+                  }}
+                />
+                <div className="chat-input__footer">
+                  <div>
+                    <button type="button" onClick={fetchSessionsAndDocs} aria-label="Tải lại tài liệu">
+                      ⇱
+                    </button>
+                    <button type="button" onClick={() => openDocumentFile(false)} aria-label="Mở tài liệu">
+                      ▣
+                    </button>
+                  </div>
+                  <button type="submit" disabled={loading || !input.trim()}>
+                    Send ▷
+                  </button>
+                </div>
+                <p>AI can make mistakes. Verify important information.</p>
+              </form>
+            </section>
+          </div>
         </main>
+      )}
 
-        {/* Footer */}
-        <footer style={styles.footer}>
-          <form onSubmit={sendMessage} style={styles.inputGroup}>
-            <input
-              style={styles.chatInput}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Hỏi bất kỳ điều gì"
-              disabled={loading}
-            />
-            {/* ✅ Visual feedback khi disabled */}
-            <button
-              style={{
-                ...styles.sendBtn,
-                opacity: loading || !input.trim() ? 0.5 : 1,
-                cursor: loading || !input.trim() ? "not-allowed" : "pointer",
-                transform: loading ? "scale(0.95)" : "scale(1)",
-                transition: "all 0.15s ease",
-              }}
-              type="submit"
-              disabled={loading || !input.trim()}
-            >
-              {loading ? "⏳" : "➤"}
+      {view === "history" && (
+        <main className="history-screen">
+          <section className="recent-session">
+            <h1>
+              <span>▱</span>
+              Recent Session
+            </h1>
+            <div className="recent-session__card">
+              {sessions.map((session, index) => {
+                const docCount = (session.selected_docs || []).length;
+                return (
+                  <article
+                    key={session.id}
+                    className="recent-session__item"
+                    onClick={() => openSession(session)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") openSession(session);
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <button
+                      type="button"
+                      className="recent-session__delete"
+                      onClick={(e) => deleteSession(e, session.id)}
+                      aria-label="Xóa session"
+                      title="Xóa session"
+                    >
+                      x
+                    </button>
+                    <span className="recent-session__kind">
+                      <i>□</i>
+                      {getSessionKind(index)}
+                    </span>
+                    <strong>{getSessionTitle(session)}</strong>
+                    <span className="recent-session__meta">
+                      <b>{docCount || 1} Docs</b>
+                      <small>{getSessionTimeLabel(session)}</small>
+                    </span>
+                  </article>
+                );
+              })}
+              {!sessions.length && (
+                <div className="recent-session__empty">Chưa có lịch sử trò chuyện.</div>
+              )}
+            </div>
+          </section>
+        </main>
+      )}
+
+      {view === "settings" && (
+        <main className="utility-screen">
+          <h1>Settings</h1>
+          <p>Thiết lập thao tác nhanh cho giao diện nghiên cứu.</p>
+          <section className="settings-panel">
+            <label>
+              <input type="checkbox" checked={syncScroll} onChange={(e) => setSyncScroll(e.target.checked)} />
+              Sync document viewer
+            </label>
+            <button type="button" onClick={fetchSessionsAndDocs}>
+              Refresh documents and sessions
             </button>
-          </form>
-        </footer>
-        <PDFModal modal={pdfModal} onClose={() => setPdfModal(null)} token={token} />
-      </div>
+            <button type="button" onClick={handleLogout}>
+              Logout
+            </button>
+          </section>
+        </main>
+      )}
+
+      {view === "help" && (
+        <main className="utility-screen">
+          <h1>Help</h1>
+          <p>Chọn tài liệu trong Library, bấm Start, rồi đặt câu hỏi trong khung chat.</p>
+        </main>
+      )}
+
+      <PDFModal modal={pdfModal} onClose={() => setPdfModal(null)} token={token} />
     </div>
   );
 }
-
-const styles = {
-  appContainer: {
-    display: "flex",
-    flexDirection: "column",
-    height: "100vh",
-    background: "#f1f5f9",
-  },
-
-  // ── Header ──
-  header: {
-    padding: "12px 20px",
-    background: "#1e3a8a",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    flexShrink: 0,
-  },
-  headerLogo: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    background: "rgba(255,255,255,0.15)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 18,
-  },
-  headerTitle: { fontSize: 15, fontWeight: 700, color: "#fff" },
-  headerSubtitle: { fontSize: 11, color: "#93c5fd" },
-  userAvatar: {
-    width: 28,
-    height: 28,
-    borderRadius: "50%",
-    background: "#3b82f6",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 12,
-    color: "#fff",
-    fontWeight: 700,
-  },
-  logoutBtn: {
-    padding: "5px 12px",
-    borderRadius: 7,
-    border: "1px solid rgba(255,255,255,0.25)",
-    background: "rgba(255,255,255,0.1)",
-    color: "#fff",
-    cursor: "pointer",
-    fontSize: 12,
-  },
-
-  // ── Chat ──
-  chatArea: {
-    flex: 1,
-    overflowY: "auto",
-    padding: "20px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "16px",
-  },
-  dateDivider: { textAlign: "center", margin: "4px 0" },
-  dateDividerText: {
-    fontSize: 11,
-    color: "#94a3b8",
-    background: "#e2e8f0",
-    padding: "2px 12px",
-    borderRadius: 10,
-  },
-
-  // ── Welcome ──
-  welcomeWrap: {
-    textAlign: "center",
-    padding: "40px 20px",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: 12,
-  },
-  welcomeIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: 16,
-    background: "#1e3a8a",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 32,
-  },
-  welcomeTitle: { fontSize: 20, fontWeight: 700, color: "#1e293b", margin: 0 },
-  welcomeSubtitle: { fontSize: 14, color: "#64748b", maxWidth: 400, margin: 0 },
-  suggestionWrap: { display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 8 },
-  suggestionBtn: {
-    padding: "8px 14px",
-    borderRadius: 20,
-    border: "1px solid #bfdbfe",
-    background: "#eff6ff",
-    color: "#1d4ed8",
-    fontSize: 13,
-    cursor: "pointer",
-    fontWeight: 500,
-  },
-
-  // ── Messages ──
-  msgWrapperUser: {
-    alignSelf: "flex-end",
-    display: "flex",
-    flexDirection: "row-reverse",
-    gap: 10,
-    maxWidth: "80%",
-  },
-  msgWrapperBot: {
-    alignSelf: "flex-start",
-    display: "flex",
-    gap: 10,
-    maxWidth: "80%",
-  },
-  avatarUser: {
-    width: 30,
-    height: 30,
-    borderRadius: "50%",
-    background: "#3b82f6",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 12,
-    color: "#fff",
-    fontWeight: 700,
-    flexShrink: 0,
-  },
-  avatarBot: {
-    width: 30,
-    height: 30,
-    borderRadius: "50%",
-    background: "#1e3a8a",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 16,
-    flexShrink: 0,
-  },
-  userBubble: {
-    background: "linear-gradient(135deg, #1d4ed8, #3b82f6)",
-    color: "#fff",
-    padding: "10px 16px",
-    borderRadius: "16px 16px 4px 16px",
-    boxShadow: "0 2px 8px rgba(37,99,235,0.25)",
-    wordBreak: "break-word",
-    fontSize: 14,
-  },
-  botBubble: {
-    background: "#fff",
-    border: "0.5px solid #e2e8f0",
-    padding: "12px 18px",
-    borderRadius: "4px 16px 16px 16px",
-    color: "#1e293b",
-    lineHeight: "1.6",
-    boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-    wordBreak: "break-word",
-    overflowX: "auto",
-    fontSize: 14,
-  },
-  sourceContainer: {
-    marginTop: 6,
-    display: "flex",
-    flexWrap: "wrap",
-    gap: 5,
-  },
-  sourceTag: {
-    fontSize: 11,
-    background: "#eff6ff",
-    color: "#1d4ed8",
-    padding: "3px 9px",
-    borderRadius: 6,
-    border: "0.5px solid #bfdbfe",
-  },
-
-  // ── Footer ──
-  footer: {
-    padding: "14px 20px",
-    background: "#fff",
-    borderTop: "0.5px solid #e2e8f0",
-    flexShrink: 0,
-  },
-  inputGroup: {
-    display: "flex",
-    gap: 10,
-    maxWidth: "900px",
-    margin: "0 auto",
-    background: "#f8fafc",
-    border: "0.5px solid #e2e8f0",
-    borderRadius: 14,
-    padding: "6px 8px",
-    alignItems: "center",
-  },
-  chatInput: {
-    flex: 1,
-    padding: "8px 12px",
-    border: "none",
-    outline: "none",
-    fontSize: 14,
-    background: "transparent",
-    color: "#1e293b",
-  },
-  sendBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 9,
-    border: "none",
-    background: "#1e3a8a",
-    color: "#fff",
-    fontWeight: "bold",
-    fontSize: 15,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-
-  // ── Auth ──
-  authContainer: {
-    height: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "linear-gradient(135deg, #0f172a, #1e1b4b, #312e81)",
-    position: "relative",
-    overflow: "hidden",
-  },
-  authCard: {
-    background: "rgba(255, 255, 255, 0.05)",
-    padding: "40px",
-    borderRadius: 24,
-    boxShadow: "0 8px 32px 0 rgba(0, 0, 0, 0.3)",
-    backdropFilter: "blur(16px)",
-    WebkitBackdropFilter: "blur(16px)",
-    border: "1px solid rgba(255, 255, 255, 0.1)",
-    width: 360,
-    zIndex: 10,
-  },
-  authLogoWrap: { display: "flex", justifyContent: "center", marginBottom: 16 },
-  authLogo: {
-    width: 56,
-    height: 56,
-    borderRadius: 14,
-    background: "#1e3a8a",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 28,
-  },
-  authTitle: {
-    textAlign: "center",
-    color: "#fff",
-    fontSize: 24,
-    fontWeight: 700,
-    margin: "0 0 6px",
-    letterSpacing: "0.5px"
-  },
-  authSubtitle: {
-    textAlign: "center",
-    color: "#94a3b8",
-    fontSize: 14,
-    margin: "0 0 24px",
-  },
-  form: { display: "flex", flexDirection: "column", gap: 16 },
-  inputWrap: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    padding: "12px 16px",
-    borderRadius: 12,
-    border: "1px solid rgba(255, 255, 255, 0.15)",
-    background: "rgba(255, 255, 255, 0.05)",
-  },
-  inputIcon: { fontSize: 18, flexShrink: 0, filter: "grayscale(1) brightness(2)" },
-  input: {
-    flex: 1,
-    border: "none",
-    outline: "none",
-    background: "transparent",
-    fontSize: 15,
-    color: "#fff",
-  },
-  primaryBtn: {
-    padding: "14px",
-    borderRadius: 12,
-    border: "none",
-    background: "linear-gradient(90deg, #3b82f6, #8b5cf6)",
-    color: "#fff",
-    fontWeight: 700,
-    fontSize: 15,
-    cursor: "pointer",
-    boxShadow: "0 4px 15px rgba(139, 92, 246, 0.3)",
-  },
-  toggleAuth: {
-    textAlign: "center",
-    marginTop: 20,
-    color: "#93c5fd",
-    cursor: "pointer",
-    fontSize: 14,
-    fontWeight: 500,
-    fontSize: 13,
-  },
-  spinner: {
-    width: 18,
-    height: 18,
-    borderRadius: "50%",
-    border: "2px solid #e2e8f0",
-    borderTopColor: "#1e3a8a",
-    animation: "spin 0.8s linear infinite",
-    flexShrink: 0,
-  },
-
-};

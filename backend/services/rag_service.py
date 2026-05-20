@@ -40,6 +40,7 @@ def get_chat_llm(streaming: bool = False):
         model=CHATGPT_MODEL,
         api_key=GITHUB_TOKEN,
         base_url="https://models.github.ai/inference",
+        temperature=0,
         streaming=streaming,
     )
 
@@ -75,6 +76,59 @@ def is_document_summary_question(question: str) -> bool:
     summary_terms = ("ve cai gi", "noi dung", "tom tat", "la gi", "noi ve gi")
     doc_terms = ("file", "tai lieu", "pdf", "van ban")
     return any(term in q for term in doc_terms) and any(term in q for term in summary_terms)
+
+def format_history(history):
+    if not history:
+        return ""
+    lines = []
+    for msg in history:
+        role = "Sinh viên" if msg["role"] == "user" else "Trợ lý"
+        lines.append(f"{role}: {msg['content']}")
+    return "\n".join(lines)
+
+def format_docs(docs):
+    if not docs:
+        return ""
+    formatted = []
+    for index, doc in enumerate(docs, start=1):
+        filename = doc.metadata.get("filename", "unknown")
+        page = doc.metadata.get("page", "?")
+        formatted.append(
+            f"[S{index}] Nguồn: {filename}, Trang: {page}\n"
+            f"Nội dung: {doc.page_content}"
+        )
+    return "\n\n---\n\n".join(formatted)
+
+def get_unique_sources(docs):
+    sources = []
+    for doc in docs:
+        filename = doc.metadata.get("filename")
+        page = doc.metadata.get("page")
+        if not filename or page in (None, ""):
+            continue
+        sources.append({"filename": filename, "page": page})
+    unique_sources = []
+    seen = set()
+    for source in sources:
+        pair = (source["filename"], source["page"])
+        if pair not in seen:
+            unique_sources.append(source)
+            seen.add(pair)
+    return unique_sources
+
+def build_flexible_prompt():
+    return ChatPromptTemplate.from_template(
+        "Bạn là UET Assistant, trợ lý học vụ và tài liệu.\n\n"
+        "Cách trả lời:\n"
+        "- Trả lời tự nhiên, rõ ràng, bằng tiếng Việt.\n"
+        "- Nếu có ngữ cảnh từ tài liệu, hãy dùng ngữ cảnh đó khi thấy hữu ích.\n"
+        "- Nếu ngữ cảnh ít hoặc trống, vẫn có thể trả lời theo hiểu biết chung và lịch sử hội thoại.\n"
+        "- Không cần hiển thị nguồn trong câu trả lời.\n\n"
+        "Lịch sử hội thoại gần đây:\n{history}\n\n"
+        "Ngữ cảnh truy xuất được:\n{context}\n\n"
+        "Câu hỏi: {question}\n\n"
+        "Trả lời:"
+    )
 
 def ensure_collection():
     try:
@@ -172,9 +226,7 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
                 search_kwargs=search_kwargs
             )
 
-            llm = get_chat_llm()
-
-            def format_history(history):
+            def legacy_format_history(history):
                 if not history:
                     return ""
                 lines = []
@@ -196,6 +248,7 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
             )
 
             # Lấy docs từ Qdrant
+            prompt = build_flexible_prompt()
             retrieval_query = "tóm tắt nội dung chính của tài liệu" if summary_question else question
             retrieved_docs = retriever.invoke(retrieval_query)
 
@@ -218,21 +271,11 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
             elif retrieved_docs:
                 retrieved_docs = retrieved_docs[:k]
 
-            # Không có docs liên quan → trả lời ngay không cần gọi LLM
-            if not retrieved_docs:
-                chain = (
-                    {
-                        "context": lambda _: "",
-                        "history": lambda _: format_history(chat_history),
-                        "question": RunnablePassthrough()
-                    }
-                    | prompt
-                    | llm
-                )
-                response = chain.invoke(question)
-                return {"answer": response.content, "sources": []}
+            sources = get_unique_sources(retrieved_docs)
 
-            def format_docs(docs):
+            # Không có docs hoặc không có metadata nguồn hợp lệ -> không gọi LLM.
+            llm = get_chat_llm()
+            def legacy_format_docs(docs):
                 if not docs:
                     return ""
                 formatted = []
@@ -251,20 +294,9 @@ def query_rag(question: str, k: int = 5, chat_history: list = [], selected_doc_i
                 | llm
             )
             response = chain.invoke(question)
+            answer = response.content
 
-            sources = [
-                {"filename": doc.metadata.get("filename", "unknown"), "page": doc.metadata.get("page", "?")}
-                for doc in retrieved_docs
-            ]
-            unique_sources = []
-            seen = set()
-            for s in sources:
-                pair = (s['filename'], s['page'])
-                if pair not in seen:
-                    unique_sources.append(s)
-                    seen.add(pair)
-
-            return {"answer": response.content, "sources": unique_sources}
+            return {"answer": answer, "sources": sources}
 
         except Exception as e:
             err_str = str(e)
@@ -332,9 +364,7 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
             search_kwargs=search_kwargs
         )
 
-        llm = get_chat_llm()
-
-        def format_history(history):
+        def legacy_format_history(history):
             if not history: return ""
             return "\n".join([f"{'Sinh viên' if m['role']=='user' else 'Trợ lý'}: {m['content']}" for m in history])
 
@@ -350,6 +380,7 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
             "Câu hỏi hiện tại: {question}"
         )
 
+        prompt = build_flexible_prompt()
         retrieval_query = "tóm tắt nội dung chính của tài liệu" if summary_question else question
         retrieved_docs = retriever.invoke(retrieval_query)
         yield json.dumps({"type": "status", "data": f"📑 Tìm thấy {len(retrieved_docs)} đoạn tài liệu có thể liên quan..."}) + "\n"
@@ -371,26 +402,19 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
         elif retrieved_docs:
             retrieved_docs = retrieved_docs[:k]
 
-        def format_docs(docs):
+        def legacy_format_docs(docs):
             if not docs: return ""
             return "\n\n---\n\n".join([f"[Nguồn: {d.metadata.get('filename')}, Trang: {d.metadata.get('page')}]\nNội dung: {d.page_content}" for d in docs])
 
-        sources = [{"filename": d.metadata.get("filename", "unknown"), "page": d.metadata.get("page", "?")} for d in retrieved_docs]
-        unique_sources = []
+        sources = get_unique_sources(retrieved_docs)
+        unique_sources = sources
         seen = set()
-        for s in sources:
-            pair = (s['filename'], s['page'])
-            if pair not in seen:
-                unique_sources.append(s)
-                seen.add(pair)
                 
         yield json.dumps({"type": "sources", "data": unique_sources}) + "\n"
         
-        if not retrieved_docs:
-            yield json.dumps({"type": "status", "data": "💬 Đang trả lời (Giao tiếp thông thường)..."}) + "\n"
-        else:
-            yield json.dumps({"type": "status", "data": "💡 Đang tổng hợp câu trả lời từ tài liệu..."}) + "\n"
+        yield json.dumps({"type": "status", "data": "Đang tổng hợp câu trả lời..."}) + "\n"
 
+        llm = get_chat_llm()
         chain = (
             {
                 "context": lambda _: format_docs(retrieved_docs),
@@ -402,7 +426,8 @@ def query_rag_stream(question: str, k: int = 5, chat_history: list = [], selecte
         )
 
         response = chain.invoke(question)
-        yield json.dumps({"type": "chunk", "data": response.content}) + "\n"
+        answer = response.content
+        yield json.dumps({"type": "chunk", "data": answer}) + "\n"
 
     except Exception as e:
         logger.error(f"Streaming error: {e}")

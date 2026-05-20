@@ -47,3 +47,4 @@ db_backups/
 *.sw?
 .env
 .env.example
+.env

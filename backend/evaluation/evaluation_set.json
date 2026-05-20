@@ -1,0 +1,277 @@
+{
+  "name": "rag_project_grounding_eval",
+  "version": 1,
+  "source_note": "Grounded cases are derived from the project RAG technical report. Upload the matching PDF/report to the app and set RAG_EVAL_DOC_IDS before running API evaluation.",
+  "cases": [
+    {
+      "id": "grounded_001",
+      "category": "grounded_qa",
+      "question": "Hệ thống RAG này được thiết kế theo kiến trúc nào?",
+      "expected_keywords": ["microservices", "docker", "docker compose"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_002",
+      "category": "grounded_qa",
+      "question": "Các cụm chính trong kiến trúc hệ thống gồm những gì?",
+      "expected_keywords": ["nginx", "frontend", "backend", "postgresql", "qdrant", "minio", "redis"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_003",
+      "category": "grounded_qa",
+      "question": "Frontend của dự án dùng công nghệ lõi nào?",
+      "expected_keywords": ["react", "vite"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_004",
+      "category": "grounded_qa",
+      "question": "Backend API được xây dựng bằng framework nào?",
+      "expected_keywords": ["fastapi", "uvicorn"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_005",
+      "category": "grounded_qa",
+      "question": "Dự án dùng cơ chế xác thực và bảo mật mật khẩu nào?",
+      "expected_keywords": ["jwt", "python-jose", "bcrypt", "passlib"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_006",
+      "category": "grounded_qa",
+      "question": "Celery và Redis có vai trò gì trong hệ thống?",
+      "expected_keywords": ["background", "worker", "redis", "message", "queue"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_007",
+      "category": "grounded_qa",
+      "question": "PostgreSQL lưu những loại dữ liệu nào?",
+      "expected_keywords": ["users", "chatmessages", "documents", "metadata"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_008",
+      "category": "grounded_qa",
+      "question": "MinIO được dùng để làm gì?",
+      "expected_keywords": ["object storage", "pdf", "s3", "file"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_009",
+      "category": "grounded_qa",
+      "question": "Qdrant giữ vai trò gì trong pipeline RAG?",
+      "expected_keywords": ["vector", "embeddings", "cosine", "search"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_010",
+      "category": "grounded_qa",
+      "question": "Dự án dùng thư viện nào để bóc tách nội dung PDF?",
+      "expected_keywords": ["pymupdf", "pymupdfloader"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_011",
+      "category": "grounded_qa",
+      "question": "Chunking trong hệ thống được thực hiện bằng thành phần nào?",
+      "expected_keywords": ["recursivecharactertextsplitter", "chunk", "overlap"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_012",
+      "category": "grounded_qa",
+      "question": "Embedding model được nhắc tới trong tài liệu là gì?",
+      "expected_keywords": ["keepitreal/vietnamese-sbert", "vietnamese", "sbert"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_013",
+      "category": "grounded_qa",
+      "question": "Nginx xử lý traffic như thế nào?",
+      "expected_keywords": ["port 80", "/api", "backend", "frontend"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_014",
+      "category": "grounded_qa",
+      "question": "Cloudflare Tunnel được dùng với mục đích gì?",
+      "expected_keywords": ["expose", "internet", "nat", "firewall"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_015",
+      "category": "grounded_qa",
+      "question": "Prometheus và Grafana hỗ trợ phần nào của hệ thống?",
+      "expected_keywords": ["monitoring", "metrics", "dashboard", "prometheus", "grafana"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_016",
+      "category": "grounded_qa",
+      "question": "Quy trình upload và ingest tài liệu diễn ra theo các bước chính nào?",
+      "expected_keywords": ["upload", "minio", "postgresql", "redis", "celery", "qdrant"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_017",
+      "category": "grounded_qa",
+      "question": "CI/CD của dự án được mô tả sử dụng công cụ gì?",
+      "expected_keywords": ["github actions", "flake8", "docker-compose build"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_018",
+      "category": "grounded_qa",
+      "question": "Cơ chế backup database dùng container nào và lịch chạy ra sao?",
+      "expected_keywords": ["postgres-backup-local", "12h", "backup_keep_days", "7"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_019",
+      "category": "grounded_qa",
+      "question": "Vì sao việc xử lý PDF được đưa sang background worker?",
+      "expected_keywords": ["api", "block", "worker", "background", "trải nghiệm"],
+      "requires_sources": true
+    },
+    {
+      "id": "grounded_020",
+      "category": "grounded_qa",
+      "question": "Tài liệu nói gì về việc chống hallucination trong prompt RAG?",
+      "expected_keywords": ["context", "không biết", "hallucination", "dựa trên"],
+      "requires_sources": true
+    },
+    {
+      "id": "oos_001",
+      "category": "out_of_scope",
+      "question": "Ngày mai thời tiết Hà Nội thế nào?",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_002",
+      "category": "out_of_scope",
+      "question": "Giá Bitcoin hiện tại là bao nhiêu?",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_003",
+      "category": "out_of_scope",
+      "question": "Ai là tổng thống Mỹ hiện nay?",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_004",
+      "category": "out_of_scope",
+      "question": "Cho tôi đơn thuốc trị viêm họng.",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_005",
+      "category": "out_of_scope",
+      "question": "Viết dự đoán kết quả xổ số tuần này.",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_006",
+      "category": "out_of_scope",
+      "question": "So sánh iPhone mới nhất với Samsung mới nhất.",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_007",
+      "category": "out_of_scope",
+      "question": "Tóm tắt tin tức chính trị hôm nay.",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_008",
+      "category": "out_of_scope",
+      "question": "Hướng dẫn cấu hình Kubernetes production cho hệ thống khác.",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_009",
+      "category": "out_of_scope",
+      "question": "Cho biết học phí của một trường đại học khác trong năm nay.",
+      "must_refuse": true
+    },
+    {
+      "id": "oos_010",
+      "category": "out_of_scope",
+      "question": "Tạo kế hoạch đầu tư cổ phiếu cá nhân cho tôi.",
+      "must_refuse": true
+    },
+    {
+      "id": "summary_001",
+      "category": "summary",
+      "question": "File này về cái gì?",
+      "expected_keywords": ["rag", "kiến trúc", "docker", "hỏi đáp"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_002",
+      "category": "summary",
+      "question": "Tóm tắt tài liệu trong 5 ý chính.",
+      "expected_keywords": ["frontend", "backend", "storage", "rag", "monitoring"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_003",
+      "category": "summary",
+      "question": "Nội dung chính của PDF là gì?",
+      "expected_keywords": ["retrieval", "generation", "docker", "fastapi"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_004",
+      "category": "summary",
+      "question": "Tài liệu mô tả những thành phần kỹ thuật nào?",
+      "expected_keywords": ["react", "fastapi", "celery", "qdrant", "minio"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_005",
+      "category": "summary",
+      "question": "Hãy nêu luồng xử lý tài liệu từ upload đến truy vấn.",
+      "expected_keywords": ["upload", "minio", "celery", "embedding", "qdrant"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_006",
+      "category": "summary",
+      "question": "Tóm tắt phần hạ tầng và giám sát.",
+      "expected_keywords": ["nginx", "cloudflare", "prometheus", "grafana"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_007",
+      "category": "summary",
+      "question": "Tài liệu giải thích RAG core engine như thế nào?",
+      "expected_keywords": ["langchain", "pymupdf", "embedding", "qdrant", "llm"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_008",
+      "category": "summary",
+      "question": "Tóm tắt các lớp lưu trữ dữ liệu trong hệ thống.",
+      "expected_keywords": ["postgresql", "minio", "qdrant"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_009",
+      "category": "summary",
+      "question": "Tóm tắt các điểm phục vụ production readiness.",
+      "expected_keywords": ["docker", "backup", "monitoring", "ci/cd"],
+      "requires_sources": true
+    },
+    {
+      "id": "summary_010",
+      "category": "summary",
+      "question": "Tài liệu này hữu ích cho ai và dùng để làm gì?",
+      "expected_keywords": ["quản trị", "triển khai", "rag", "hệ thống"],
+      "requires_sources": true
+    }
+  ]
+}

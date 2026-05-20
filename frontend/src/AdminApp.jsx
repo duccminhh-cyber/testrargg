@@ -1,16 +1,26 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const API = "/api";
 
 const STATUS_STYLE = {
-  done:       { bg: "#dcfce7", color: "#166534", label: "✓ Hoàn thành" },
-  processing: { bg: "#dbeafe", color: "#1e40af", label: "⟳ Đang xử lý" },
-  pending:    { bg: "#fef9c3", color: "#854d0e", label: "⏳ Chờ xử lý"  },
-  error:      { bg: "#fee2e2", color: "#991b1b", label: "✗ Lỗi"         },
+  done: { bg: "#dcfce7", color: "#166534", label: "Hoàn thành" },
+  processing: { bg: "#dbeafe", color: "#1e40af", label: "Đang xử lý" },
+  pending: { bg: "#fef9c3", color: "#854d0e", label: "Chờ xử lý" },
+  error: { bg: "#fee2e2", color: "#991b1b", label: "Lỗi" },
 };
+
+function ThemeToggle({ theme, setTheme }) {
+  return (
+    <button style={styles.themeToggle(theme)} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+      <span>{theme === "dark" ? "☀" : "☾"}</span>
+      {theme === "dark" ? "Sáng" : "Tối"}
+    </button>
+  );
+}
 
 export default function AdminApp() {
   const [token, setToken] = useState(localStorage.getItem("adminToken") || "");
+  const [theme, setTheme] = useState(localStorage.getItem("theme") || "light");
   const [tab, setTab] = useState("documents");
   const [documents, setDocuments] = useState([]);
   const [users, setUsers] = useState([]);
@@ -22,7 +32,20 @@ export default function AdminApp() {
   const [adminNewUsername, setAdminNewUsername] = useState("");
   const [adminNewPassword, setAdminNewPassword] = useState("");
 
+  useEffect(() => {
+    localStorage.setItem("theme", theme);
+  }, [theme]);
+
   const headers = { Authorization: `Bearer ${token}` };
+  const doneDocs = documents.filter((d) => d.status === "done").length;
+  const processingDocs = documents.filter((d) => d.status === "processing" || d.status === "pending").length;
+  const adminUsers = users.filter((u) => u.is_admin).length;
+
+  const pageTitle = useMemo(() => {
+    if (tab === "users") return ["Người dùng", "Quản lý quyền truy cập và tài khoản sử dụng hệ thống."];
+    if (tab === "settings") return ["Bảo mật", "Cập nhật thông tin đăng nhập của quản trị viên."];
+    return ["Kho tri thức", "Theo dõi tài liệu, trạng thái ingest và chất lượng nguồn RAG."];
+  }, [tab]);
 
   function handleLogout() {
     localStorage.removeItem("adminToken");
@@ -34,7 +57,7 @@ export default function AdminApp() {
   async function safeFetch(url, options = {}) {
     const res = await fetch(url, {
       ...options,
-      headers: { ...headers, ...(options.headers || {}) }
+      headers: { ...headers, ...(options.headers || {}) },
     });
     if (res.status === 401) {
       handleLogout();
@@ -43,65 +66,28 @@ export default function AdminApp() {
     return res;
   }
 
-useEffect(() => {
-  if (!token) return;
-
-  // Validate token ngay khi load
-  async function checkToken() {
-    try {
-      const res = await fetch(`${API}/admin/users`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.status === 401) {
-        handleLogout();
-      } else if (res.ok) {
-        setUsers(await res.json());
-        fetchDocuments();
-      }
-    } catch {
-      // Backend chưa ready, retry sau
-      setTimeout(checkToken, 2000);
-    }
-  }
-
-  checkToken();
-}, []); // ← Chạy 1 lần khi mount
-
   async function fetchDocuments() {
-    const maxRetries = 5;
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const res = await safeFetch(`${API}/documents`);
-        if (!res) return;
-        if (res.ok) {
-          setDocuments(await res.json());
-          return;
-        }
-      } catch (err) {
-        console.log(`Retry fetchDocuments ${i + 1}/${maxRetries}...`);
-      }
-      await new Promise(r => setTimeout(r, 2000));
-    }
+    const res = await safeFetch(`${API}/documents`);
+    if (res?.ok) setDocuments(await res.json());
   }
 
   async function fetchUsers() {
-    const maxRetries = 5;
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const res = await safeFetch(`${API}/admin/users`);
-        if (!res) return;
-        if (res.ok) {
-          setUsers(await res.json());
-          return;
-        }
-      } catch (err) {
-        console.log(`Retry fetchUsers ${i + 1}/${maxRetries}...`);
-      }
-      await new Promise(r => setTimeout(r, 2000));
-    }
+    const res = await safeFetch(`${API}/admin/users`);
+    if (res?.ok) setUsers(await res.json());
   }
 
-  // ✅ handleRefresh đã có
+  useEffect(() => {
+    if (!token) return;
+    async function init() {
+      try {
+        await Promise.all([fetchDocuments(), fetchUsers()]);
+      } catch {
+        setTimeout(init, 1500);
+      }
+    }
+    init();
+  }, [token]);
+
   const handleRefresh = async () => {
     setRefreshing(true);
     await Promise.all([fetchDocuments(), fetchUsers()]);
@@ -116,16 +102,12 @@ useEffect(() => {
     });
     const res = await fetch(`${API}/auth/login`, { method: "POST", body: form });
     const data = await res.json();
-    if (res.ok) {
-      if (!data.is_admin) {
-        alert("Tài khoản này không có quyền Admin!");
-        return;
-      }
+    if (res.ok && data.is_admin) {
       localStorage.setItem("adminToken", data.access_token);
       setToken(data.access_token);
-    } else {
-      alert("Sai tài khoản hoặc mật khẩu!");
+      return;
     }
+    alert(data.detail || "Tài khoản không có quyền Admin hoặc thông tin đăng nhập sai.");
   }
 
   const handleUpload = async (e) => {
@@ -134,62 +116,46 @@ useEffect(() => {
     setUploading(true);
     const formData = new FormData();
     formData.append("file", file);
-    const res = await safeFetch(`${API}/documents/upload`, {
-      method: "POST",
-      body: formData,
-    });
-    if (res && res.ok) {
-      alert("Upload thành công! Worker đang xử lý trong nền.");
-      fetchDocuments();
-    } else if (res) {
-      const err = await res.json();
-      alert(err.detail || "Upload thất bại!");
-    }
+    const res = await safeFetch(`${API}/documents/upload`, { method: "POST", body: formData });
+    if (res?.ok) await fetchDocuments();
+    else if (res) alert((await res.json()).detail || "Upload thất bại.");
     setUploading(false);
     e.target.value = "";
   };
 
   const deleteDoc = async (id) => {
-    if (window.confirm("Xóa file này và toàn bộ Vector Data?")) {
-      const res = await safeFetch(`${API}/documents/${id}`, { method: "DELETE" });
-      if (res && res.ok) {
-        fetchDocuments();
-      } else if (res) {
-        const err = await res.json();
-        alert(err.detail || "Không thể xóa tài liệu này!");
-      }
-    }
+    if (!window.confirm("Xóa file này và toàn bộ vector data?")) return;
+    const res = await safeFetch(`${API}/documents/${id}`, { method: "DELETE" });
+    if (res?.ok) fetchDocuments();
+    else if (res) alert((await res.json()).detail || "Không thể xóa tài liệu.");
   };
 
   const deleteUser = async (id) => {
-    if (window.confirm("Xóa người dùng này cùng toàn bộ dữ liệu của họ?")) {
-      const res = await safeFetch(`${API}/admin/users/${id}`, { method: "DELETE" });
-      if (res && res.ok) fetchUsers();
-      else alert("Lỗi khi xóa người dùng!");
-    }
+    if (!window.confirm("Xóa người dùng này cùng toàn bộ dữ liệu của họ?")) return;
+    const res = await safeFetch(`${API}/admin/users/${id}`, { method: "DELETE" });
+    if (res?.ok) fetchUsers();
   };
 
   const createUser = async () => {
-    if (!newUsername || !newPassword) return alert("Điền đủ username và password!");
+    if (!newUsername || !newPassword) return alert("Điền đủ username và password.");
     const res = await safeFetch(`${API}/admin/users`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: newUsername, password: newPassword, is_admin: false }),
     });
-    if (res && res.ok) {
+    if (res?.ok) {
       setNewUsername("");
       setNewPassword("");
       fetchUsers();
     } else if (res) {
-      const err = await res.json();
-      alert(err.detail || "Lỗi tạo user!");
+      alert((await res.json()).detail || "Lỗi tạo user.");
     }
   };
 
   const updateAdminCredentials = async (e) => {
     e.preventDefault();
-    if (!currentPassword) return alert("Vui lòng nhập mật khẩu hiện tại để xác thực!");
-    if (!adminNewUsername && !adminNewPassword) return alert("Vui lòng nhập tài khoản hoặc mật khẩu mới!");
+    if (!currentPassword) return alert("Nhập mật khẩu hiện tại để xác thực.");
+    if (!adminNewUsername && !adminNewPassword) return alert("Nhập username hoặc password mới.");
     const res = await safeFetch(`${API}/auth/update-credentials`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -200,8 +166,7 @@ useEffect(() => {
       }),
     });
     const data = await res?.json();
-    if (res && res.ok) {
-      alert("Cập nhật thành công!");
+    if (res?.ok) {
       setCurrentPassword("");
       setAdminNewUsername("");
       setAdminNewPassword("");
@@ -210,21 +175,22 @@ useEffect(() => {
         setToken(data.access_token);
       }
     } else if (data) {
-      alert(data.detail || "Cập nhật thất bại!");
+      alert(data.detail || "Cập nhật thất bại.");
     }
   };
 
   if (!token) {
     return (
-      <div style={styles.authContainer}>
-        <form onSubmit={adminLogin} style={styles.authCard}>
-          <div style={styles.authLogoWrap}>
-            <div style={styles.authLogo}>⚙️</div>
+      <div style={styles.authShell(theme)}>
+        <form onSubmit={adminLogin} style={styles.authCard(theme)}>
+          <div style={styles.authTop}>
+            <div style={styles.brandMark}>R</div>
+            <ThemeToggle theme={theme} setTheme={setTheme} />
           </div>
-          <h2 style={styles.authTitle}>Quản trị hệ thống</h2>
-          <p style={styles.authSubtitle}>Đăng nhập bằng tài khoản Admin</p>
-          <input name="username" style={styles.input} placeholder="Tên đăng nhập" />
-          <input name="password" type="password" style={styles.input} placeholder="Mật khẩu" />
+          <h1 style={styles.authTitle(theme)}>RAG Control Center</h1>
+          <p style={styles.authSubtitle(theme)}>Đăng nhập để quản trị tài liệu, người dùng và pipeline tri thức.</p>
+          <input name="username" style={styles.input(theme)} placeholder="Tên đăng nhập" />
+          <input name="password" type="password" style={styles.input(theme)} placeholder="Mật khẩu" />
           <button style={styles.primaryBtn} type="submit">Đăng nhập</button>
         </form>
       </div>
@@ -232,209 +198,172 @@ useEffect(() => {
   }
 
   return (
-    <div style={styles.adminLayout}>
-      <aside style={styles.sidebar}>
-        <div style={styles.sidebarBrand}>
-          <span style={{ fontSize: 20 }}>⚙️</span>
-          <span>RAG ADMIN</span>
+    <div style={styles.shell(theme)}>
+      <aside style={styles.sidebar(theme)}>
+        <div style={styles.brand(theme)}>
+          <div style={styles.brandMark}>R</div>
+          <div>
+            <div style={styles.brandTitle(theme)}>RAG Admin</div>
+            <div style={styles.brandSub(theme)}>Knowledge Ops</div>
+          </div>
         </div>
-        <nav style={{ flex: 1 }}>
-          <div style={tab === "documents" ? styles.sideItemActive : styles.sideItem} onClick={() => setTab("documents")}>
-            <span>📂</span> Tài liệu
-          </div>
-          <div style={tab === "users" ? styles.sideItemActive : styles.sideItem} onClick={() => setTab("users")}>
-            <span>👥</span> Người dùng
-          </div>
-          <div style={tab === "settings" ? styles.sideItemActive : styles.sideItem} onClick={() => setTab("settings")}>
-            <span>🔒</span> Bảo mật
-          </div>
+
+        <nav style={styles.nav}>
+          {[
+            ["documents", "▦", "Tài liệu"],
+            ["users", "◉", "Người dùng"],
+            ["settings", "◈", "Bảo mật"],
+          ].map(([key, icon, label]) => (
+            <button key={key} style={styles.navItem(theme, tab === key)} onClick={() => setTab(key)}>
+              <span>{icon}</span>{label}
+            </button>
+          ))}
         </nav>
 
-        <div style={styles.sideStats}>
-          <div style={styles.statItem}>
-            <span style={styles.statNum}>{documents.length}</span>
-            <span style={styles.statLabel}>Tài liệu</span>
-          </div>
-          <div style={styles.statDivider} />
-          <div style={styles.statItem}>
-            <span style={styles.statNum}>{users.length}</span>
-            <span style={styles.statLabel}>Người dùng</span>
-          </div>
+        <div style={styles.sideCard(theme)}>
+          <div style={styles.sideMetric(theme)}><b>{documents.length}</b><span>Tài liệu</span></div>
+          <div style={styles.sideMetric(theme)}><b>{users.length}</b><span>Người dùng</span></div>
         </div>
 
-        {/* ✅ Dùng handleLogout */}
-        <button style={styles.logoutBtn} onClick={handleLogout}>
-          Đăng xuất
-        </button>
+        <button style={styles.logoutBtn(theme)} onClick={handleLogout}>Đăng xuất</button>
       </aside>
 
-      <main style={styles.mainContent}>
-        <header style={styles.contentHeader}>
+      <main style={styles.main(theme)}>
+        <header style={styles.header(theme)}>
           <div>
-            <h1 style={styles.contentTitle}>
-              {tab === "documents" && "Quản lý Tài liệu RAG"}
-              {tab === "users" && "Quản lý Người dùng"}
-              {tab === "settings" && "Bảo mật tài khoản"}
-            </h1>
-            <p style={styles.contentSubtitle}>
-              {tab === "documents" && `${documents.length} tài liệu · ${documents.filter(d => d.status === "done").length} đã xử lý`}
-              {tab === "users" && `${users.length} người dùng · ${users.filter(u => u.is_admin).length} admin`}
-              {tab === "settings" && "Cập nhật tài khoản và mật khẩu quản trị"}
-            </p>
+            <div style={styles.eyebrow(theme)}>Enterprise RAG Operations</div>
+            <h1 style={styles.title(theme)}>{pageTitle[0]}</h1>
+            <p style={styles.subtitle(theme)}>{pageTitle[1]}</p>
           </div>
-
-          {tab === "documents" && (
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={handleRefresh} style={styles.refreshBtn} disabled={refreshing}>
-                {refreshing ? "⟳ Đang tải..." : "↻ Làm mới"}
-              </button>
-              <label style={uploading ? { ...styles.uploadBtn, opacity: 0.6 } : styles.uploadBtn}>
-                {uploading ? "⟳ Đang xử lý..." : "+ Thêm PDF"}
+          <div style={styles.headerActions}>
+            <ThemeToggle theme={theme} setTheme={setTheme} />
+            <button onClick={handleRefresh} style={styles.secondaryBtn(theme)} disabled={refreshing}>
+              {refreshing ? "Đang tải..." : "Làm mới"}
+            </button>
+            {tab === "documents" && (
+              <label style={styles.primaryBtn}>
+                {uploading ? "Đang xử lý..." : "Thêm PDF"}
                 <input type="file" hidden onChange={handleUpload} accept=".pdf" disabled={uploading} />
               </label>
-            </div>
-          )}
+            )}
+          </div>
         </header>
 
+        <section style={styles.kpiGrid}>
+          <div style={styles.kpi(theme)}><span>Tài liệu sẵn sàng</span><b>{doneDocs}</b><small>{processingDocs} đang xử lý</small></div>
+          <div style={styles.kpi(theme)}><span>Người dùng</span><b>{users.length}</b><small>{adminUsers} admin</small></div>
+          <div style={styles.kpi(theme)}><span>Chất lượng nguồn</span><b>{documents.length ? Math.round((doneDocs / documents.length) * 100) : 0}%</b><small>PDF ingest hoàn tất</small></div>
+        </section>
+
         {tab === "users" && (
-          <div style={styles.createUserCard}>
-            <p style={styles.createUserLabel}>Cấp tài khoản mới</p>
-            <div style={{ display: "flex", gap: 10 }}>
-              <input style={styles.formInput} placeholder="Tên đăng nhập..." value={newUsername} onChange={e => setNewUsername(e.target.value)} />
-              <input style={styles.formInput} type="password" placeholder="Mật khẩu..." value={newPassword} onChange={e => setNewPassword(e.target.value)} />
-              <button style={styles.uploadBtn} onClick={createUser}>+ Tạo tài khoản</button>
+          <section style={styles.panel(theme)}>
+            <div style={styles.panelTitle(theme)}>Cấp tài khoản mới</div>
+            <div style={styles.formRow}>
+              <input style={styles.input(theme)} placeholder="Tên đăng nhập" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+              <input style={styles.input(theme)} type="password" placeholder="Mật khẩu" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              <button style={styles.primaryBtn} onClick={createUser}>Tạo tài khoản</button>
             </div>
-          </div>
+          </section>
         )}
 
         {tab === "settings" && (
-          <form style={styles.createUserCard} onSubmit={updateAdminCredentials}>
-            <p style={styles.createUserLabel}>Thay đổi thông tin đăng nhập Admin</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 400 }}>
-              <input style={styles.formInput} type="password" placeholder="Mật khẩu hiện tại (Bắt buộc) *" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} required />
-              <div style={{ height: 1, background: "#f1f5f9", margin: "4px 0" }} />
-              <input style={styles.formInput} placeholder="Tên đăng nhập mới (Tùy chọn)" value={adminNewUsername} onChange={e => setAdminNewUsername(e.target.value)} />
-              <input style={styles.formInput} type="password" placeholder="Mật khẩu mới (Tùy chọn)" value={adminNewPassword} onChange={e => setAdminNewPassword(e.target.value)} />
-              <button type="submit" style={{ ...styles.uploadBtn, marginTop: 8 }}>✓ Cập nhật</button>
+          <form style={styles.panel(theme)} onSubmit={updateAdminCredentials}>
+            <div style={styles.panelTitle(theme)}>Thông tin đăng nhập Admin</div>
+            <div style={styles.formColumn}>
+              <input style={styles.input(theme)} type="password" placeholder="Mật khẩu hiện tại" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+              <input style={styles.input(theme)} placeholder="Tên đăng nhập mới" value={adminNewUsername} onChange={(e) => setAdminNewUsername(e.target.value)} />
+              <input style={styles.input(theme)} type="password" placeholder="Mật khẩu mới" value={adminNewPassword} onChange={(e) => setAdminNewPassword(e.target.value)} />
+              <button type="submit" style={styles.primaryBtn}>Cập nhật</button>
             </div>
           </form>
         )}
 
         {(tab === "documents" || tab === "users") && (
-          <div style={styles.tableCard}>
+          <section style={styles.tablePanel(theme)}>
             <table style={styles.table}>
               <thead>
-                <tr style={{ background: "#f8fafc" }}>
-                  <th style={{ ...styles.th, width: 60 }}>ID</th>
-                  <th style={styles.th}>{tab === "documents" ? "Tên File" : "Tên đăng nhập"}</th>
-                  <th style={styles.th}>Trạng thái / Vai trò</th>
-                  {tab === "documents" && <th style={styles.th}>Ngày tải lên</th>}
-                  <th style={{ ...styles.th, width: 100, textAlign: "center" }}>Hành động</th>
+                <tr>
+                  <th style={styles.th(theme)}>ID</th>
+                  <th style={styles.th(theme)}>{tab === "documents" ? "Tên file" : "Tài khoản"}</th>
+                  <th style={styles.th(theme)}>{tab === "documents" ? "Trạng thái" : "Vai trò"}</th>
+                  {tab === "documents" && <th style={styles.th(theme)}>Ngày tải lên</th>}
+                  <th style={{ ...styles.th(theme), textAlign: "right" }}>Hành động</th>
                 </tr>
               </thead>
               <tbody>
-                {tab === "documents" && documents.length === 0 && (
-                  <tr><td colSpan={5} style={styles.emptyState}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>📂</div>
-                    <div>Chưa có tài liệu nào.</div>
-                    <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>Nhấn "+ Thêm PDF" để upload tài liệu đầu tiên.</div>
-                  </td></tr>
-                )}
-                {tab === "users" && users.length === 0 && (
-                  <tr><td colSpan={4} style={styles.emptyState}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
-                    <div>Chưa có người dùng nào.</div>
-                  </td></tr>
-                )}
-
-                {tab === "documents" ? documents.map(doc => {
+                {tab === "documents" ? documents.map((doc) => {
                   const s = STATUS_STYLE[doc.status] || STATUS_STYLE.pending;
                   return (
-                    <tr key={doc.id} style={styles.tr}>
-                      <td style={{ ...styles.td, color: "#94a3b8", fontSize: 12 }}>#{doc.id}</td>
-                      <td style={styles.td}>
-                        <div style={{ fontWeight: 600, color: "#1e293b", fontSize: 14 }}>{doc.filename}</div>
-                        {doc.error_message && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 2 }}>⚠ {doc.error_message}</div>}
-                      </td>
-                      <td style={styles.td}>
-                        <span style={{ ...styles.badge, background: s.bg, color: s.color }}>{s.label}</span>
-                      </td>
-                      <td style={{ ...styles.td, fontSize: 12, color: "#64748b" }}>
-                        {doc.created_at ? new Date(doc.created_at).toLocaleDateString("vi-VN") : "—"}
-                      </td>
-                      <td style={{ ...styles.td, textAlign: "center" }}>
-                        <button onClick={() => deleteDoc(doc.id)} style={styles.delBtn} disabled={doc.status === "processing"} title={doc.status === "processing" ? "Đang xử lý, không thể xóa" : "Xóa"}>
-                          🗑 Xóa
-                        </button>
-                      </td>
+                    <tr key={doc.id} style={styles.tr(theme)}>
+                      <td style={styles.td(theme)}>#{doc.id}</td>
+                      <td style={styles.td(theme)}><b>{doc.filename}</b>{doc.error_message && <small style={styles.errorText}>{doc.error_message}</small>}</td>
+                      <td style={styles.td(theme)}><span style={{ ...styles.badge, background: s.bg, color: s.color }}>{s.label}</span></td>
+                      <td style={styles.td(theme)}>{doc.created_at ? new Date(doc.created_at).toLocaleDateString("vi-VN") : "-"}</td>
+                      <td style={{ ...styles.td(theme), textAlign: "right" }}><button style={styles.dangerBtn(theme)} disabled={doc.status === "processing"} onClick={() => deleteDoc(doc.id)}>Xóa</button></td>
                     </tr>
                   );
-                }) : users.map(user => (
-                  <tr key={user.id} style={styles.tr}>
-                    <td style={{ ...styles.td, color: "#94a3b8", fontSize: 12 }}>#{user.id}</td>
-                    <td style={styles.td}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={styles.userAvatar}>{user.username[0].toUpperCase()}</div>
-                        <span style={{ fontWeight: 600, fontSize: 14 }}>{user.username}</span>
-                      </div>
-                    </td>
-                    <td style={styles.td}>
-                      <span style={{ ...styles.badge, background: user.is_admin ? "#f3e8ff" : "#f1f5f9", color: user.is_admin ? "#7c3aed" : "#475569" }}>
-                        {user.is_admin ? "👑 Admin" : "👤 User"}
-                      </span>
-                    </td>
-                    <td style={{ ...styles.td, textAlign: "center" }}>
-                      {user.username !== "admin" && (
-                        <button style={styles.delBtn} onClick={() => deleteUser(user.id)}>🗑 Xóa</button>
-                      )}
-                    </td>
+                }) : users.map((user) => (
+                  <tr key={user.id} style={styles.tr(theme)}>
+                    <td style={styles.td(theme)}>#{user.id}</td>
+                    <td style={styles.td(theme)}><b>{user.username}</b></td>
+                    <td style={styles.td(theme)}><span style={{ ...styles.badge, background: user.is_admin ? "#f3e8ff" : "#eef2f7", color: user.is_admin ? "#7c3aed" : "#475569" }}>{user.is_admin ? "Admin" : "User"}</span></td>
+                    <td style={{ ...styles.td(theme), textAlign: "right" }}>{user.username !== "admin" && <button style={styles.dangerBtn(theme)} onClick={() => deleteUser(user.id)}>Xóa</button>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
+          </section>
         )}
       </main>
     </div>
   );
 }
 
+const isDark = (theme) => theme === "dark";
+const surface = (theme) => isDark(theme) ? "#101a28" : "#ffffff";
+const text = (theme) => isDark(theme) ? "#edf4fb" : "#102033";
+const muted = (theme) => isDark(theme) ? "#94a3b8" : "#60758c";
+const border = (theme) => isDark(theme) ? "#24364b" : "#dbe5ef";
+
 const styles = {
-  adminLayout: { display: "flex", height: "100vh", background: "#f1f5f9" },
-  sidebar: { width: 240, background: "#0f172a", color: "#fff", padding: "24px 16px", display: "flex", flexDirection: "column", gap: 4 },
-  sidebarBrand: { fontSize: 18, fontWeight: 700, marginBottom: 32, color: "#38bdf8", display: "flex", alignItems: "center", gap: 8, paddingLeft: 4 },
-  sideItem: { padding: "10px 12px", borderRadius: 8, cursor: "pointer", color: "#94a3b8", fontSize: 14, display: "flex", alignItems: "center", gap: 8 },
-  sideItemActive: { padding: "10px 12px", borderRadius: 8, cursor: "pointer", background: "#1e293b", color: "#fff", fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 8 },
-  sideStats: { marginTop: "auto", marginBottom: 16, background: "#1e293b", borderRadius: 10, padding: "14px", display: "flex", justifyContent: "space-around", alignItems: "center" },
-  statItem: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2 },
-  statNum: { fontSize: 22, fontWeight: 700, color: "#38bdf8" },
-  statLabel: { fontSize: 11, color: "#64748b" },
-  statDivider: { width: 1, height: 30, background: "#334155" },
-  logoutBtn: { background: "#ef4444", color: "#fff", border: "none", padding: "10px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13 },
-  mainContent: { flex: 1, padding: 32, overflowY: "auto" },
-  contentHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
-  contentTitle: { fontSize: 22, fontWeight: 700, color: "#0f172a", margin: "0 0 4px" },
-  contentSubtitle: { fontSize: 13, color: "#64748b", margin: 0 },
-  createUserCard: { background: "#fff", borderRadius: 12, padding: "16px 20px", marginBottom: 20, border: "0.5px solid #e2e8f0" },
-  createUserLabel: { fontSize: 13, fontWeight: 600, color: "#475569", margin: "0 0 10px" },
-  formInput: { flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid #e2e8f0", outline: "none", fontSize: 14, color: "#1e293b" },
-  tableCard: { background: "#fff", borderRadius: 12, border: "0.5px solid #e2e8f0", overflow: "hidden" },
+  shell: (theme) => ({ minHeight: "100vh", display: "flex", background: isDark(theme) ? "#07111f" : "#f5f8fb", color: text(theme), fontFamily: "Inter, system-ui, sans-serif" }),
+  sidebar: (theme) => ({ width: 280, padding: 18, display: "flex", flexDirection: "column", gap: 16, background: isDark(theme) ? "#08111d" : "#ffffff", borderRight: `1px solid ${border(theme)}` }),
+  brand: (theme) => ({ display: "flex", alignItems: "center", gap: 12, padding: "10px 8px 18px", borderBottom: `1px solid ${border(theme)}` }),
+  brandMark: { width: 38, height: 38, borderRadius: 8, display: "grid", placeItems: "center", color: "#fff", fontWeight: 900, background: "linear-gradient(135deg,#0ea5e9,#22c55e)" },
+  brandTitle: (theme) => ({ color: text(theme), fontWeight: 850, fontSize: 15 }),
+  brandSub: (theme) => ({ color: muted(theme), fontSize: 12 }),
+  nav: { display: "flex", flexDirection: "column", gap: 8 },
+  navItem: (theme, active) => ({ display: "flex", gap: 10, alignItems: "center", padding: "11px 12px", borderRadius: 8, border: `1px solid ${active ? "rgba(14,165,233,.35)" : "transparent"}`, background: active ? "rgba(14,165,233,.12)" : "transparent", color: active ? (isDark(theme) ? "#e0f7ff" : "#0e7490") : muted(theme), cursor: "pointer", textAlign: "left" }),
+  sideCard: (theme) => ({ marginTop: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, padding: 12, borderRadius: 8, background: isDark(theme) ? "#101a28" : "#f4f8fb", border: `1px solid ${border(theme)}` }),
+  sideMetric: (theme) => ({ display: "flex", flexDirection: "column", gap: 2, color: muted(theme), fontSize: 12 }),
+  logoutBtn: (theme) => ({ padding: 11, borderRadius: 8, border: `1px solid ${border(theme)}`, background: isDark(theme) ? "#1b2433" : "#fff", color: text(theme), cursor: "pointer", fontWeight: 750 }),
+  main: (theme) => ({ flex: 1, padding: 30, overflowY: "auto", background: isDark(theme) ? "linear-gradient(180deg,#0b1422,#07111f)" : "linear-gradient(180deg,#f8fbfd,#eef4f8)" }),
+  header: () => ({ display: "flex", justifyContent: "space-between", gap: 20, alignItems: "flex-start", marginBottom: 20 }),
+  eyebrow: (theme) => ({ fontSize: 12, color: muted(theme), textTransform: "uppercase", fontWeight: 850 }),
+  title: (theme) => ({ margin: "3px 0", fontSize: 32, color: text(theme), letterSpacing: 0 }),
+  subtitle: (theme) => ({ margin: 0, color: muted(theme), fontSize: 14 }),
+  headerActions: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" },
+  themeToggle: (theme) => ({ display: "inline-flex", gap: 8, alignItems: "center", padding: "9px 12px", borderRadius: 8, border: `1px solid ${border(theme)}`, background: surface(theme), color: text(theme), cursor: "pointer", fontWeight: 750 }),
+  primaryBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "10px 16px", minHeight: 40, borderRadius: 8, border: 0, background: "linear-gradient(135deg,#0e7490,#22c55e)", color: "#fff", cursor: "pointer", fontWeight: 850 },
+  secondaryBtn: (theme) => ({ padding: "10px 14px", borderRadius: 8, border: `1px solid ${border(theme)}`, background: surface(theme), color: text(theme), cursor: "pointer", fontWeight: 750 }),
+  kpiGrid: { display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 14, marginBottom: 18 },
+  kpi: (theme) => ({ padding: 18, borderRadius: 8, background: surface(theme), border: `1px solid ${border(theme)}`, boxShadow: isDark(theme) ? "none" : "0 16px 36px rgba(15,23,42,.06)", display: "flex", flexDirection: "column", gap: 6 }),
+  panel: (theme) => ({ padding: 18, borderRadius: 8, background: surface(theme), border: `1px solid ${border(theme)}`, marginBottom: 18 }),
+  panelTitle: (theme) => ({ color: text(theme), fontWeight: 850, marginBottom: 12 }),
+  formRow: { display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10 },
+  formColumn: { display: "grid", maxWidth: 460, gap: 12 },
+  input: (theme) => ({ width: "100%", padding: "11px 12px", borderRadius: 8, border: `1px solid ${border(theme)}`, background: isDark(theme) ? "#0b1422" : "#fff", color: text(theme), outline: "none" }),
+  tablePanel: (theme) => ({ overflow: "hidden", borderRadius: 8, background: surface(theme), border: `1px solid ${border(theme)}`, boxShadow: isDark(theme) ? "none" : "0 16px 36px rgba(15,23,42,.06)" }),
   table: { width: "100%", borderCollapse: "collapse" },
-  th: { textAlign: "left", padding: "13px 16px", borderBottom: "0.5px solid #e2e8f0", color: "#475569", fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" },
-  td: { padding: "14px 16px", borderBottom: "0.5px solid #f1f5f9", fontSize: 14 },
-  tr: { transition: "background 0.1s" },
-  badge: { padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 600, display: "inline-block" },
-  delBtn: { color: "#ef4444", border: "none", background: "none", cursor: "pointer", fontWeight: 600, fontSize: 13, padding: "4px 8px", borderRadius: 6 },
-  refreshBtn: { padding: "9px 16px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#fff", color: "#475569", cursor: "pointer", fontWeight: 600, fontSize: 13 },
-  uploadBtn: { background: "#1e3a8a", color: "#fff", padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13, border: "none" },
-  userAvatar: { width: 28, height: 28, borderRadius: "50%", background: "#dbeafe", color: "#1d4ed8", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 },
-  emptyState: { textAlign: "center", padding: "50px 20px", color: "#64748b", fontSize: 14 },
-  authContainer: { height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, #0f172a, #1e3a8a)" },
-  authCard: { background: "#fff", padding: 40, borderRadius: 20, boxShadow: "0 20px 60px rgba(0,0,0,0.3)", width: 340, display: "flex", flexDirection: "column", gap: 0 },
-  authLogoWrap: { display: "flex", justifyContent: "center", marginBottom: 16 },
-  authLogo: { width: 56, height: 56, borderRadius: 14, background: "#0f172a", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26 },
-  authTitle: { textAlign: "center", fontSize: 20, fontWeight: 700, color: "#0f172a", margin: "0 0 6px" },
-  authSubtitle: { textAlign: "center", fontSize: 13, color: "#64748b", margin: "0 0 24px" },
-  input: { width: "100%", padding: 12, marginBottom: 12, borderRadius: 8, border: "1px solid #e2e8f0", boxSizing: "border-box", fontSize: 14, outline: "none" },
-  primaryBtn: { width: "100%", padding: 12, borderRadius: 8, border: "none", background: "#1e3a8a", color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: 15 },
+  th: (theme) => ({ textAlign: "left", padding: "13px 16px", color: muted(theme), fontSize: 12, textTransform: "uppercase", borderBottom: `1px solid ${border(theme)}` }),
+  td: (theme) => ({ padding: "15px 16px", color: text(theme), borderBottom: `1px solid ${border(theme)}`, fontSize: 14, verticalAlign: "middle" }),
+  tr: () => ({}),
+  badge: { padding: "5px 10px", borderRadius: 8, fontSize: 12, fontWeight: 800 },
+  dangerBtn: (theme) => ({ padding: "7px 10px", borderRadius: 8, border: `1px solid ${isDark(theme) ? "#7f1d1d" : "#fecaca"}`, background: isDark(theme) ? "#2a1114" : "#fff5f5", color: "#ef4444", cursor: "pointer", fontWeight: 800 }),
+  errorText: { display: "block", color: "#ef4444", marginTop: 4 },
+  authShell: (theme) => ({ minHeight: "100vh", display: "grid", placeItems: "center", background: isDark(theme) ? "linear-gradient(135deg,#07111f,#102033)" : "linear-gradient(135deg,#e8f7f2,#f8fbfd)" }),
+  authCard: (theme) => ({ width: 390, padding: 34, borderRadius: 8, background: surface(theme), border: `1px solid ${border(theme)}`, boxShadow: "0 30px 80px rgba(7,17,31,.22)" }),
+  authTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22 },
+  authTitle: (theme) => ({ color: text(theme), margin: 0, fontSize: 28 }),
+  authSubtitle: (theme) => ({ color: muted(theme), lineHeight: 1.6, marginBottom: 22 }),
 };

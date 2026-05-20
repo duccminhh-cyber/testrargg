@@ -52,9 +52,7 @@ class ChatRequest(BaseModel):
     selected_doc_ids: list[int] = []
     session_id: Optional[int] = None
 
-SELECT_DOCUMENT_MESSAGE = (
-    "Vui lòng tick chọn ít nhất một tài liệu trong mục Nguồn Tri Thức trước khi đặt câu hỏi."
-)
+SELECT_DOCUMENT_MESSAGE = "Vui lòng tick chọn ít nhất một tài liệu trước khi đặt câu hỏi để tôi có nội dung trả lời."
 
 class SessionCreate(BaseModel):
     title: str = "Cuộc trò chuyện mới"
@@ -224,7 +222,7 @@ def chat_query(
             db.add(bot_msg)
             db.commit()
             return
-        
+
         full_content = ""
         final_sources = []
         try:

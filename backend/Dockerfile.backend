@@ -1,8 +1,12 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.11-slim
 
 # Tránh Python tạo file .pyc và buffer stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/models/huggingface \
+    SENTENCE_TRANSFORMERS_HOME=/models/sentence-transformers \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -17,9 +21,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements trước để tận dụng Docker layer cache
 # (chỉ rebuild layer này khi requirements.txt thay đổi)
 COPY requirements.txt .
-RUN pip install --default-timeout=1000 --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip && \
+    python -m pip install --default-timeout=1000 --index-url ${PIP_INDEX_URL} -r requirements.txt
 # Tải trước model để tránh timeout khi demo
-RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='keepitreal/vietnamese-sbert')"
+RUN mkdir -p /models && \
+    python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='keepitreal/vietnamese-sbert')"
 
 # Copy toàn bộ source code backend
 COPY . .

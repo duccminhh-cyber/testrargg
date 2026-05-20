@@ -4,6 +4,8 @@ node_modules/
 # Build output cũ — stage builder sẽ tự build lại
 dist/
 build/
+coverage/
+*.log
 
 # Secrets
 .env
