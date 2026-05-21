@@ -211,12 +211,24 @@ export default function App() {
         const resDocs = await fetch(`${API}/documents`, {
           headers: { Authorization: `Bearer ${token}` }
         });
+        if (resDocs.status === 401) {
+          localStorage.removeItem("token");
+          setToken("");
+          setMessages([]);
+          return;
+        }
         if (!resDocs.ok) throw new Error("not ready");
         setDocuments((await resDocs.json()).filter(d => d.status === "done"));
 
         const resSessions = await fetch(`${API}/chat/sessions`, {
           headers: { Authorization: `Bearer ${token}` }
         });
+        if (resSessions.status === 401) {
+          localStorage.removeItem("token");
+          setToken("");
+          setMessages([]);
+          return;
+        }
         if (!resSessions.ok) throw new Error("not ready");
         const data = await resSessions.json();
         setSessions(data);
@@ -332,8 +344,18 @@ export default function App() {
         }
         if (res.ok) {
           const data = await res.json();
-          setMessages(data);
-          return; // ✅ Thành công thì dừng
+
+          setMessages(
+            data.map(msg => ({
+              ...msg,
+              sources: Array.isArray(msg.sources)
+                ? JSON.stringify(msg.sources)
+                : msg.sources,
+              time: msg.time || "",
+            }))
+          );
+
+          return;
         }
       } catch (err) {
         console.log(`Retry ${i + 1}/${maxRetries} fetch history...`);
@@ -373,78 +395,106 @@ export default function App() {
       alert("Không thể kết nối server. Kiểm tra lại mạng!");
     }
   }
+async function fetchSessionsOnly() {
+  try {
+    const resSessions = await fetch(`${API}/chat/sessions`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
 
-  async function sendMessage(e) {
-    e.preventDefault();
-    if (!input.trim() || loading) return;
+    if (resSessions.ok) {
+      const data = await resSessions.json();
+      setSessions(data);
+    }
+  } catch (err) {
+    console.error("Không thể refresh sessions:", err);
+  }
+}
 
-    const question = input.trim();
-    const time = formatTime();
+async function sendMessage(e) {
+  e.preventDefault();
+  if (!input.trim() || loading) return;
 
-    setMessages(prev => [...prev, { role: "user", content: question, time }]);
-    setInput("");
-    setLoading(true);
-    setBotStatus("Đang xử lý...");
+  const question = input.trim();
+  const time = formatTime();
 
-    try {
-      const res = await fetch(`${API}/chat/query`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          question,
-          selected_doc_ids: selectedDocIds,
-          session_id: currentSessionId
-        }),
-      });
+  setMessages(prev => [...prev, { role: "user", content: question, time }]);
+  setInput("");
+  setLoading(true);
+  setThinkStartTime(Date.now());
 
-      if (res.status === 401) {
-        localStorage.removeItem("token");
-        setToken("");
-        setMessages([]);
-        return;
+  setBotStatus(
+    selectedDocIds.length > 0
+      ? "Đang tra cứu nguồn tri thức"
+      : "Đang xử lý câu hỏi"
+  );
+
+  try {
+    const res = await fetch(`${API}/chat/query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        question,
+        selected_doc_ids: selectedDocIds,
+        session_id: currentSessionId
+      }),
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("currentSessionId");
+      setToken("");
+      setMessages([]);
+      setCurrentSessionId(null);
+      return;
+    }
+
+    const data = await res.json();
+
+    if (res.ok) {
+      if (data.session_id && data.session_id !== currentSessionId) {
+        setCurrentSessionId(data.session_id);
+        await fetchSessionsOnly();
       }
 
-      const data = await res.json();
-
-      if (res.ok) {
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "assistant",
-            content: data.answer ?? "",
-            sources: JSON.stringify(data.sources ?? []),
-            time: formatTime(),
-          },
-        ]);
-      } else {
-        setMessages(prev => [
-          ...prev,
-          {
-            role: "assistant",
-            content: `⚠️ Lỗi: ${data.detail || "Không xác định"}`,
-            sources: "[]",
-            time: formatTime(),
-          },
-        ]);
-      }
-    } catch (err) {
       setMessages(prev => [
         ...prev,
         {
           role: "assistant",
-          content: "⚠️ Không thể kết nối server.",
+          content: data.answer ?? "",
+          sources: JSON.stringify(data.sources ?? []),
+          time: formatTime(),
+        },
+      ]);
+    } else {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `⚠️ Lỗi: ${data.detail || "Không xác định"}`,
           sources: "[]",
           time: formatTime(),
         },
       ]);
-    } finally {
-      setLoading(false);
-      setBotStatus("");
     }
+  } catch (err) {
+    setMessages(prev => [
+      ...prev,
+      {
+        role: "assistant",
+        content: "⚠️ Không thể kết nối server.",
+        sources: "[]",
+        time: formatTime(),
+      },
+    ]);
+  } finally {
+    setLoading(false);
+    setBotStatus("");
+    setThinkStartTime(null);
   }
+}
   async function handleSourceClick(src) {
     try {
       const res = await fetch(
@@ -697,26 +747,10 @@ export default function App() {
                 </div>
                 <div style={{ maxWidth: "100%", minWidth: 0 }}>
                   {/* Hiển thị Bubble Chat */}
-                  {safeContent || isUser ? (
+                  {(safeContent || isUser) && (
                     <div style={isUser ? styles.userBubble : styles.botBubble}>
                       {isUser ? safeContent : <SafeMarkdown content={safeContent} />}
                     </div>
-                  ) : (
-                    // Khi safeContent rỗng và đang loading thì hiển thị trạng thái đang nghĩ (thay vì bubble trống)
-                    loading && idx === messages.length - 1 && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: "rgba(30, 58, 138, 0.05)", borderRadius: "4px 16px 16px 16px", width: "fit-content", border: "0.5px solid #e2e8f0" }}>
-                        <div style={styles.spinner} />
-                        <span style={{ color: "#3b82f6", fontSize: 13, fontWeight: 500, fontStyle: "italic", display: "flex", alignItems: "center" }}>
-                          {botStatus}
-                          <AnimatedDots />
-                          {thinkStartTime && (
-                            <span style={{ color: "#94a3b8", marginLeft: 8, fontSize: 11, fontWeight: "normal" }}>
-                              ({thinkTime}s)
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    )
                   )}
 
                   {/* Sources */}
@@ -762,6 +796,30 @@ export default function App() {
               </div>
             );
           })}
+                  {/* ✅ Typing indicator — thêm VÀO ĐÂY */}
+        {loading && (
+            <div style={styles.msgWrapperBot}>
+              <div style={styles.avatarBot}>🤖</div>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "8px 14px",
+                background: "rgba(30, 58, 138, 0.05)",
+                borderRadius: "4px 16px 16px 16px",
+                border: "0.5px solid #e2e8f0"
+              }}>
+                <div style={styles.spinner} />
+                <span style={{ color: "#3b82f6", fontSize: 13, fontWeight: 500, fontStyle: "italic", display: "flex", alignItems: "center" }}>
+                  {botStatus || "Đang xử lý"}
+                  <AnimatedDots />
+                  {thinkStartTime && (
+                    <span style={{ color: "#94a3b8", marginLeft: 8, fontSize: 11, fontWeight: "normal" }}>
+                      ({thinkTime}s)
+                    </span>
+                  )}
+                </span>
+              </div>
+            </div>
+          )}
 
           <div ref={bottomRef} />
         </main>

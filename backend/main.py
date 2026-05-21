@@ -172,13 +172,46 @@ def chat_query(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    from models import ChatSession
+
     question = request.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
 
+    # 1. Nếu chưa có session_id thì tạo session mới
+    session_id = request.session_id
+
+    if session_id is None:
+        title = question[:40] + ("..." if len(question) > 40 else "")
+        new_session = ChatSession(
+            user_id=current_user.id,
+            title=title,
+            selected_docs=request.selected_doc_ids or []
+        )
+        db.add(new_session)
+        db.commit()
+        db.refresh(new_session)
+        session_id = new_session.id
+    else:
+        session = (
+            db.query(ChatSession)
+            .filter(ChatSession.id == session_id, ChatSession.user_id == current_user.id)
+            .first()
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Cập nhật tài liệu được chọn cho phiên hiện tại
+        session.selected_docs = request.selected_doc_ids or []
+        db.commit()
+
+    # 2. Lấy lịch sử đúng theo session hiện tại
     recent_messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.user_id == current_user.id)
+        .filter(
+            ChatMessage.user_id == current_user.id,
+            ChatMessage.session_id == session_id
+        )
         .order_by(ChatMessage.created_at.desc())
         .limit(6)
         .all()
@@ -186,21 +219,29 @@ def chat_query(
     recent_messages = list(reversed(recent_messages))
     chat_history = [{"role": msg.role, "content": msg.content} for msg in recent_messages]
 
-    user_msg = ChatMessage(user_id=current_user.id, role="user", content=question)
+    # 3. Lưu câu hỏi user CÓ session_id
+    user_msg = ChatMessage(
+        user_id=current_user.id,
+        session_id=session_id,
+        role="user",
+        content=question
+    )
     db.add(user_msg)
 
-    # ✅ Đơn giản — gọi thẳng query_rag
+    # 4. Gọi RAG
     result = query_rag(
         question,
         chat_history=chat_history,
-        selected_doc_ids=request.selected_doc_ids if hasattr(request, 'selected_doc_ids') else None
+        selected_doc_ids=request.selected_doc_ids
     )
 
     answer = result.get("answer", "")
     sources = result.get("sources", [])
 
+    # 5. Lưu câu trả lời bot CÓ session_id
     bot_msg = ChatMessage(
         user_id=current_user.id,
+        session_id=session_id,
         role="bot",
         content=answer,
         sources=sources if sources else []
@@ -208,7 +249,12 @@ def chat_query(
     db.add(bot_msg)
     db.commit()
 
-    return result
+    # 6. Trả session_id về frontend
+    return {
+        "answer": answer,
+        "sources": sources,
+        "session_id": session_id
+    }
 
 @app.get("/api/chat/history")
 def get_chat_history(
