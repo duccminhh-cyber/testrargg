@@ -16,7 +16,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from models import Base, User, Document, IngestStatus, ChatMessage
 from database import engine, SessionLocal, get_db
 from services.minio_service import upload_file, delete_file, get_file_stream  # ✅ 1 dòng import duy nhất
-from services.rag_service import query_rag, query_rag_stream, delete_document_vectors, ensure_collection
+from services.rag_service import query_rag, delete_document_vectors, ensure_collection
 from celery_worker import ingest_document_task
 import uuid
 
@@ -36,6 +36,10 @@ app.add_middleware(
 )
 
 Instrumentator().instrument(app).expose(app)
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 class UserRegister(BaseModel):
     username: str
@@ -172,91 +176,39 @@ def chat_query(
     if not question:
         raise HTTPException(status_code=400, detail="Question is required")
 
-    session_id = request.session_id
-    from models import ChatSession
-    
-    # Logic tự động tạo Tên cuộc trò chuyện từ câu hỏi đầu tiên
-    is_new_session = False
-    if not session_id:
-        title = question[:30] + "..." if len(question) > 30 else question
-        new_session = ChatSession(
-            user_id=current_user.id,
-            title=title,
-            selected_docs=request.selected_doc_ids
-        )
-        db.add(new_session)
-        db.commit()
-        db.refresh(new_session)
-        session_id = new_session.id
-        is_new_session = True
-
     recent_messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.user_id == current_user.id, ChatMessage.session_id == session_id)
+        .filter(ChatMessage.user_id == current_user.id)
         .order_by(ChatMessage.created_at.desc())
         .limit(6)
         .all()
     )
     recent_messages = list(reversed(recent_messages))
-    chat_history = [
-        {"role": msg.role, "content": msg.content}
-        for msg in recent_messages
-    ]
+    chat_history = [{"role": msg.role, "content": msg.content} for msg in recent_messages]
 
-    user_msg = ChatMessage(user_id=current_user.id, session_id=session_id, role="user", content=question)
+    user_msg = ChatMessage(user_id=current_user.id, role="user", content=question)
     db.add(user_msg)
+
+    # ✅ Đơn giản — gọi thẳng query_rag
+    result = query_rag(
+        question,
+        chat_history=chat_history,
+        selected_doc_ids=request.selected_doc_ids if hasattr(request, 'selected_doc_ids') else None
+    )
+
+    answer = result.get("answer", "")
+    sources = result.get("sources", [])
+
+    bot_msg = ChatMessage(
+        user_id=current_user.id,
+        role="bot",
+        content=answer,
+        sources=sources if sources else []
+    )
+    db.add(bot_msg)
     db.commit()
 
-    def generate():
-        if is_new_session:
-            yield json.dumps({"type": "session_created", "data": {"id": session_id, "title": title}}) + "\n"
-
-        if not request.selected_doc_ids:
-            yield json.dumps({"type": "sources", "data": []}) + "\n"
-            yield json.dumps({"type": "chunk", "data": SELECT_DOCUMENT_MESSAGE}) + "\n"
-            bot_msg = ChatMessage(
-                user_id=current_user.id,
-                session_id=session_id,
-                role="bot",
-                content=SELECT_DOCUMENT_MESSAGE,
-                sources=[]
-            )
-            db.add(bot_msg)
-            db.commit()
-            return
-        
-        full_content = ""
-        final_sources = []
-        try:
-            for chunk in query_rag_stream(question, chat_history=chat_history, selected_doc_ids=request.selected_doc_ids):
-                yield chunk
-                try:
-                    parsed = json.loads(chunk.strip())
-                    if parsed.get("type") == "chunk":
-                        full_content += parsed.get("data", "")
-                    elif parsed.get("type") == "sources":
-                        final_sources = parsed.get("data", [])
-                except json.JSONDecodeError:
-                    pass
-            
-            # Save the bot response
-            # Note: We create a NEW session here or just reuse db. 
-            # In FastAPI generator, `db` might be closed if not careful. 
-            # But the Depends(get_db) is yielded, and will only close after StreamingResponse finishes.
-            bot_msg = ChatMessage(
-                user_id=current_user.id,
-                session_id=session_id,
-                role="bot",
-                content=full_content,
-                sources=final_sources
-            )
-            db.add(bot_msg)
-            db.commit()
-            
-        except Exception as e:
-            yield json.dumps({"type": "error", "data": str(e)}) + "\n"
-
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
+    return result
 
 @app.get("/api/chat/history")
 def get_chat_history(

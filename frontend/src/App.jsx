@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
+import "./App.css";
 
 const API = "/api";
 
@@ -201,37 +202,42 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loading, thinkStartTime]);
 
-  useEffect(() => {
-    if (token) {
-      fetchSessionsAndDocs();
-    }
-  }, [token]);
-
   async function fetchSessionsAndDocs() {
-    try {
-      // Tải documents
-      const resDocs = await fetch(`${API}/documents`, { headers: { Authorization: `Bearer ${token}` } });
-      if (resDocs.ok) {
-        setDocuments((await resDocs.json()).filter(d => d.status === "done"));
-      }
+    const maxRetries = 10;
+    const delay = 3000;
 
-      // Tải sessions
-      const resSessions = await fetch(`${API}/chat/sessions`, { headers: { Authorization: `Bearer ${token}` } });
-      if (resSessions.ok) {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        const resDocs = await fetch(`${API}/documents`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!resDocs.ok) throw new Error("not ready");
+        setDocuments((await resDocs.json()).filter(d => d.status === "done"));
+
+        const resSessions = await fetch(`${API}/chat/sessions`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!resSessions.ok) throw new Error("not ready");
         const data = await resSessions.json();
         setSessions(data);
         if (data.length > 0 && !currentSessionId) {
           switchSession(data[0]);
         }
+        return; // ✅ Thành công, dừng retry
+      } catch {
+        console.log(`Backend chưa sẵn sàng, thử lại lần ${i + 1}/${maxRetries}...`);
+        if (i < maxRetries - 1) {
+          await new Promise(r => setTimeout(r, delay));
+        }
       }
-    } catch (err) {
-      console.error(err);
     }
+    console.error("Không thể kết nối backend sau nhiều lần thử");
   }
 
   function switchSession(session) {
     setCurrentSessionId(session.id);
     setSelectedDocIds(session.selected_docs || []);
+    fetchHistory(session.id); // Trực tiếp gọi hàm load lịch sử ở đây
   }
 
   function startNewSession() {
@@ -283,10 +289,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (token && currentSessionId) {
-      fetchHistory(currentSessionId);
+    if (token) {
+      setInitialLoading(true);
+      fetchSessionsAndDocs().finally(() => setInitialLoading(false));
     }
-  }, [currentSessionId, token]);
+  }, [token]);
 
   async function fetchDocuments() {
     try {
@@ -301,6 +308,8 @@ export default function App() {
       console.error(err);
     }
   }
+
+  const [initialLoading, setInitialLoading] = useState(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -372,20 +381,10 @@ export default function App() {
     const question = input.trim();
     const time = formatTime();
 
-    setMessages((prev) => [...prev, { role: "user", content: question, time }]);
+    setMessages(prev => [...prev, { role: "user", content: question, time }]);
     setInput("");
     setLoading(true);
-    setThinkStartTime(Date.now()); // Bắt đầu đếm ngược
-    setBotStatus("Khởi động AI");
-
-    // Thêm tin nhắn bot ảo để chuẩn bị stream
-    let currentBotMsg = {
-      role: "assistant",
-      content: "",
-      sources: "[]",
-      time: formatTime(),
-    };
-    setMessages((prev) => [...prev, currentBotMsg]);
+    setBotStatus("Đang xử lý...");
 
     try {
       const res = await fetch(`${API}/chat/query`, {
@@ -394,83 +393,56 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ question, selected_doc_ids: selectedDocIds, session_id: currentSessionId }),
+        body: JSON.stringify({
+          question,
+          selected_doc_ids: selectedDocIds,
+          session_id: currentSessionId
+        }),
       });
+
       if (res.status === 401) {
         localStorage.removeItem("token");
         setToken("");
         setMessages([]);
         return;
       }
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let doneReading = false;
-      let aiStartedTyping = false;
-      let buffer = "";
+      const data = await res.json();
 
-      while (!doneReading) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n');
-        buffer = parts.pop(); // Giữ lại đoạn JSON chưa hoàn chỉnh ở cuối
-
-        for (const line of parts) {
-          if (!line.trim()) continue;
-          try {
-            const parsed = JSON.parse(line);
-
-            if (parsed.type === "session_created") {
-              // Server đã tạo phiên mới tự động
-              const newSessionData = parsed.data;
-              setCurrentSessionId(newSessionData.id);
-              // Cập nhật mảng sessions
-              setSessions(prev => [{ id: newSessionData.id, title: newSessionData.title, selected_docs: selectedDocIds }, ...prev]);
-            }
-            else if (parsed.type === "status") {
-              setBotStatus(parsed.data);
-            }
-            else if (parsed.type === "sources") {
-              currentBotMsg.sources = JSON.stringify(parsed.data);
-            }
-            else if (parsed.type === "chunk") {
-              if (!aiStartedTyping) {
-                aiStartedTyping = true;
-                setThinkStartTime(null); // Tắt đồng hồ đếm khi bắt đầu gõ
-                setBotStatus("Đang trả lời ... ");
-              }
-              currentBotMsg.content += parsed.data;
-            }
-            else if (parsed.type === "error") {
-              currentBotMsg.content += `\n\n⚠️ Lỗi: ${parsed.data}`;
-            }
-
-            // Cập nhật lại UI liên tục
-            setMessages((prev) => {
-              const newMsgs = [...prev];
-              newMsgs[newMsgs.length - 1] = { ...currentBotMsg };
-              return newMsgs;
-            });
-          } catch (e) {
-            console.error("Lỗi parse dòng NDJSON:", line, e);
-          }
-        }
+      if (res.ok) {
+        setMessages(prev => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.answer ?? "",
+            sources: JSON.stringify(data.sources ?? []),
+            time: formatTime(),
+          },
+        ]);
+      } else {
+        setMessages(prev => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `⚠️ Lỗi: ${data.detail || "Không xác định"}`,
+            sources: "[]",
+            time: formatTime(),
+          },
+        ]);
       }
     } catch (err) {
-      setMessages((prev) => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1].content = "⚠️ Không thể kết nối server hoặc có lỗi xảy ra.";
-        return newMsgs;
-      });
+      setMessages(prev => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "⚠️ Không thể kết nối server.",
+          sources: "[]",
+          time: formatTime(),
+        },
+      ]);
     } finally {
       setLoading(false);
       setBotStatus("");
-      setThinkStartTime(null);
     }
   }
   async function handleSourceClick(src) {
@@ -539,8 +511,19 @@ export default function App() {
       </div>
     );
   }
-
+  if (initialLoading) {
+  return (
+    <div style={{ height: "100vh", display: "flex", alignItems: "center",
+                  justifyContent: "center", background: "#f1f5f9",
+                  flexDirection: "column", gap: 16 }}>
+      <div style={styles.spinner} />
+      <p style={{ color: "#64748b", fontSize: 14 }}>Đang kết nối hệ thống...</p>
+    </div>
+  );
+  }
   // ── Chat UI ───────────────────────────────────────────────
+
+
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "#f1f5f9" }}>
       {/* ── Sidebar: Chat Sessions & Nguồn tri thức ── */}
@@ -1124,8 +1107,8 @@ const styles = {
     borderRadius: "50%",
     border: "2px solid #e2e8f0",
     borderTopColor: "#1e3a8a",
-    animation: "spin 0.8s linear infinite",
+    animation: "spin 0.8s linear infinite",  // ← thay toàn bộ 4 dòng bằng 1 dòng này
     flexShrink: 0,
-  },
+},
 
 };
